@@ -18,7 +18,6 @@ from turso_serverless.protocol import ProtocolError
 from backend import MAX_BODY, Response, SHEET_DATASETS
 from mailer import delivery_configured, send_update_email
 from remote import RemotePhysicsPlusApp
-from receipt_pdf import render_receipt_pdf
 from sheets_sync import dispatch as dispatch_sheet_sync, sheet_configured
 
 
@@ -163,6 +162,9 @@ def receipt_download(receipt_id: str):
         return _json_response(result)
     receipt = result.body["receipt"]
     try:
+        # ReportLab is only needed for receipt downloads; keeping it out of
+        # the common import path shortens cold login/dashboard invocations.
+        from receipt_pdf import render_receipt_pdf
         document = render_receipt_pdf(receipt)
     except (OSError, RuntimeError, ValueError):
         return _error(503, "receipt_unavailable", "The receipt is temporarily unavailable")
@@ -234,9 +236,12 @@ def landing():
 
 @app.get("/<path:asset>")
 def public_asset(asset: str):
+    dashboard_auth = None
     if asset in {"admin", "teacher", "student"}:
         try:
-            access = _backend().static_access("/" + asset, request.headers.get("Cookie", ""))
+            access, dashboard_auth = _backend().static_auth(
+                "/" + asset, request.headers.get("Cookie", ""), include_overview=True
+            )
         except (DatabaseError, ProtocolError, RuntimeError, ValueError):
             return _error(503, "service_unavailable", "The service is temporarily unavailable")
         if access == "login":
@@ -244,16 +249,26 @@ def public_asset(asset: str):
         if access == "forbidden":
             return _error(403, "forbidden", "This page is not available for your account")
         asset = "dashboard.html"
-    if asset == "dashboard.html":
+    if asset == "dashboard.html" and dashboard_auth is None:
         try:
-            access = _backend().static_access("/dashboard.html", request.headers.get("Cookie", ""))
+            access, dashboard_auth = _backend().static_auth(
+                "/dashboard.html", request.headers.get("Cookie", ""), include_overview=True
+            )
         except (DatabaseError, ProtocolError, RuntimeError, ValueError):
             return _error(503, "service_unavailable", "The service is temporarily unavailable")
         if access == "login":
             return redirect("/", code=303)
     if asset == "dashboard.html":
-        response = make_response(send_from_directory(PRIVATE_DIR, asset))
+        if dashboard_auth is None:
+            return _error(403, "forbidden", "This page is not available for your account")
+        bootstrap = json.dumps(dashboard_auth, ensure_ascii=True, separators=(",", ":"))
+        # Keep user-controlled names and emails inside the inert JSON script.
+        bootstrap = bootstrap.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+        page = (PRIVATE_DIR / asset).read_text(encoding="utf-8")
+        response = make_response(page.replace("__PP_AUTH_BOOTSTRAP__", bootstrap), 200)
+        response.headers["Content-Type"] = "text/html; charset=utf-8"
         response.headers["Cache-Control"] = "no-store"
+        response.headers["Vary"] = "Cookie"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Frame-Options"] = "DENY"
@@ -261,6 +276,7 @@ def public_asset(asset: str):
     if asset not in {
         "index.html", "live.js", "live.css", "portal.css",
         "design.css", "physics-hero-gold.png", "physics-plus-logo-yellow-black.png",
+        "physics-hero-gold.jpg", "physics-plus-logo-yellow-black.jpg", "physics-plus-favicon.png",
     }:
         return _error(404, "not_found", "Page not found")
     response = make_response(send_from_directory(PUBLIC_DIR, asset))

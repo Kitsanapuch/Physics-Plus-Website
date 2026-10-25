@@ -15,7 +15,7 @@
     pending_confirmation: 'รอยืนยันอัตรา', active: 'กำลังเรียน'
   };
   const $ = (id) => document.getElementById(id);
-  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], paymentAccount: null, sheetSyncStatus: null, nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '' };
+  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], paymentAccount: null, sheetSyncStatus: null, nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '', loadingDetails: false };
   let activeTasks = 0;
   let adminClaimIds = null;
   let adminClaimPollBusy = false;
@@ -122,16 +122,20 @@
   }
   let studentClassPollBusy = false;
   let lastStudentClassPoll = 0;
-  const thaiMoney = (satang) => new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' }).format(Number(satang || 0) / 100);
+  const moneyFormatter = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' });
+  const dateFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: TZ, dateStyle: 'medium' });
+  const dateTimeFormatter = new Intl.DateTimeFormat('th-TH', { timeZone: TZ, dateStyle: 'medium', timeStyle: 'short' });
+  const hoursFormatter = new Intl.NumberFormat('th-TH', { maximumFractionDigits: 2 });
+  const thaiMoney = (satang) => moneyFormatter.format(Number(satang || 0) / 100);
   const thaiDate = (date) => {
     if (!date) return '—';
     const parsed = typeof date === 'number' ? new Date(date * 1000) : new Date(/^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T12:00:00+07:00` : date);
-    return Number.isNaN(parsed.getTime()) ? '—' : new Intl.DateTimeFormat('th-TH', { timeZone: TZ, dateStyle: 'medium' }).format(parsed);
+    return Number.isNaN(parsed.getTime()) ? '—' : dateFormatter.format(parsed);
   };
   const thaiDateTime = (epoch) => {
     if (!epoch) return '—';
     const parsed = new Date(epoch * 1000);
-    return Number.isNaN(parsed.getTime()) ? '—' : new Intl.DateTimeFormat('th-TH', { timeZone: TZ, dateStyle: 'medium', timeStyle: 'short' }).format(parsed);
+    return Number.isNaN(parsed.getTime()) ? '—' : dateTimeFormatter.format(parsed);
   };
   const bangkokToday = () => {
     const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
@@ -139,7 +143,7 @@
     }).formatToParts(new Date()).map((part) => [part.type, part.value]));
     return `${parts.year}-${parts.month}-${parts.day}`;
   };
-  const hours = (minutes) => `${new Intl.NumberFormat('th-TH', { maximumFractionDigits: 2 }).format(Number(minutes || 0) / 60)} ชม.`;
+  const hours = (minutes) => `${hoursFormatter.format(Number(minutes || 0) / 60)} ชม.`;
   const status = (value) => statusNames[value] || value || '—';
   const validId = (value) => {
     if (!/^[0-9a-f]{32}$/.test(String(value))) throw new Error('รหัสรายการไม่ถูกต้อง');
@@ -322,10 +326,10 @@
     const role = user.role;
     document.body.classList.remove('loading-screen');
     document.body.innerHTML = `
-      <aside class="sidebar" aria-label="เมนูหลัก"><div class="sidebrand"><img src="physics-plus-logo-yellow-black.png" alt=""><div><strong>Physics<br>Plus<span style="color:#ffda39">.</span></strong><small>LEARNING WORKSPACE</small></div></div><div class="nav-label">พื้นที่ของคุณ</div><nav class="side-nav" id="side-nav"></nav><div class="side-profile"><span class="profile-avatar" id="profile-avatar"></span><div><strong id="profile-name"></strong><small id="profile-role"></small></div></div></aside>
-      <header class="live-header"><div class="brand"><img class="mark" src="physics-plus-logo-yellow-black.png" alt="โลโก้ Physics Plus"><div>Physics Plus<div class="muted" id="header-role"></div></div></div><div class="header-actions"><button type="button" id="password-button">เปลี่ยนรหัสผ่าน</button><button type="button" id="logout-button">ออกจากระบบ</button></div></header>
+      <aside class="sidebar" aria-label="เมนูหลัก"><div class="sidebrand"><img src="physics-plus-logo-yellow-black.jpg" alt=""><div><strong>Physics<br>Plus<span style="color:#ffda39">.</span></strong><small>LEARNING WORKSPACE</small></div></div><div class="nav-label">พื้นที่ของคุณ</div><nav class="side-nav" id="side-nav"></nav><div class="side-profile"><span class="profile-avatar" id="profile-avatar"></span><div><strong id="profile-name"></strong><small id="profile-role"></small></div></div></aside>
+      <header class="live-header"><div class="brand"><img class="mark" src="physics-plus-logo-yellow-black.jpg" alt="โลโก้ Physics Plus"><div>Physics Plus<div class="muted" id="header-role"></div></div></div><div class="header-actions"><button type="button" id="password-button">เปลี่ยนรหัสผ่าน</button><button type="button" id="logout-button">ออกจากระบบ</button></div></header>
       <nav class="mobile-nav" id="mobile-nav" aria-label="ส่วนต่าง ๆ ของระบบ"></nav>
-      <main><div class="intro"><div><div class="eyebrow">PHYSICS PLUS / LEARNING SPACE</div><h1 id="heading" aria-live="polite"></h1><p class="muted" id="subtitle"></p></div><span class="badge" id="hero-badge"></span><span class="math m1" aria-hidden="true">E = mc²</span><span class="math m2" aria-hidden="true">∫ x dx</span><span class="math m3" aria-hidden="true">F = ma</span><img class="hero-emblem" src="physics-plus-logo-yellow-black.png" alt="ภาพไอน์สไตน์บนโลโก้ Physics Plus"></div><p id="live-feedback" class="live-feedback" role="status" aria-live="polite" hidden></p><div id="student-live-cancellation" class="class-live-cancellation" role="alert" hidden></div><div id="live-content"></div></main>
+      <main><div class="intro"><div><div class="eyebrow">PHYSICS PLUS / LEARNING SPACE</div><h1 id="heading" aria-live="polite"></h1><p class="muted" id="subtitle"></p></div><span class="badge" id="hero-badge"></span><span class="math m1" aria-hidden="true">E = mc²</span><span class="math m2" aria-hidden="true">∫ x dx</span><span class="math m3" aria-hidden="true">F = ma</span><img class="hero-emblem" src="physics-plus-logo-yellow-black.jpg" alt="ภาพไอน์สไตน์บนโลโก้ Physics Plus"></div><p id="live-feedback" class="live-feedback" role="status" aria-live="polite" hidden></p><div id="student-live-cancellation" class="class-live-cancellation" role="alert" hidden></div><div id="live-content"></div></main>
       <dialog id="live-dialog" class="live-dialog"></dialog>`;
     $('profile-name').textContent = user.name;
     if (role === 'admin') {
@@ -447,6 +451,17 @@
     const link = $('sheet-sync-link');
     if (!statusBox || !link) return;
     const status = state.sheetSyncStatus;
+    if (!status) {
+      statusBox.textContent = 'กำลังตรวจสถานะ…';
+      link.hidden = true;
+      return;
+    }
+    if (status.request_failed) {
+      statusBox.textContent = 'ตรวจสถานะการซิงก์ไม่ได้ชั่วคราว กรุณาลองใหม่';
+      statusBox.classList.add('needs-setup');
+      link.hidden = true;
+      return;
+    }
     statusBox.classList.toggle('needs-setup', !status?.configured || Boolean(status?.last_error_code));
     statusBox.dataset.state = !status?.configured ? 'unconfigured' : (status.pending || status.last_error_code || !status.last_success_at ? 'pending' : 'ready');
     const lastSync = status?.last_success_at ? new Date(status.last_success_at) : null;
@@ -468,7 +483,56 @@
     }
   }
 
-  async function load() {
+  function renderWorkspace() {
+    const role = state.me.role;
+    const hadView = Boolean(state.viewTargetId);
+    const priorScrollY = window.scrollY;
+    $('live-content').innerHTML = formLayout();
+    installLivePanels();
+    if (role === 'student') renderStudent();
+    else if (role === 'teacher') renderTeacher();
+    else renderAdmin();
+    if (role !== 'teacher') renderPaymentAccount();
+    if (role === 'admin') {
+      renderSheetSyncStatus();
+      updateAdminPaymentAlert(state.data.pending_payment_claims || [], false,
+        Number(state.data.overview_counts?.pending_claims ?? (state.data.pending_payment_claims || []).length));
+      if (state.loadingDetails) {
+        // The overview is already authenticated and useful. Let navigation
+        // respond now, while keeping unfinished forms and rows out of view.
+        for (const section of $('live-content').querySelectorAll(':scope > .new-section:not(#overview)')) {
+          const label = state.nav.find(([id]) => id === section.id)?.[1] || 'ข้อมูล';
+          const panel = section.classList.contains('panel') ? section : element('section', 'panel');
+          if (panel !== section) section.replaceChildren(panel);
+          else panel.replaceChildren();
+          panel.setAttribute('aria-busy', 'true');
+          panel.append(element('h2', '', label), element('p', 'muted', 'กำลังโหลดข้อมูลล่าสุด…'));
+        }
+      }
+    }
+    const target = state.viewTargetId || hashTarget() || 'overview';
+    if (!showView(target, { historyMode: hadView ? 'none' : 'replace', scroll: !hadView })) showView('overview', { historyMode: 'replace', scroll: !hadView });
+    if (hadView) window.scrollTo({ top: priorScrollY, behavior: 'auto' });
+  }
+
+  function fetchSheetSyncStatus() {
+    // Sheet status is informational and must not hold up the working area.
+    void api('/api/admin/sheet-sync/status').then((status) => {
+      state.sheetSyncStatus = status;
+      renderSheetSyncStatus();
+    }).catch(() => {
+      state.sheetSyncStatus = { request_failed: true };
+      renderSheetSyncStatus();
+    });
+  }
+
+  function setAdminDetailsBusy(busy) {
+    state.loadingDetails = busy;
+    const alertButton = $('payment-alert-button');
+    if (alertButton) alertButton.disabled = busy;
+  }
+
+  async function load({ initial = false, overviewCounts = null } = {}) {
     const role = state.me.role;
     if (role === 'student') {
       const [dashboard, catalog, classes, paymentAccount] = await Promise.all([api('/api/student/dashboard'), api('/api/courses'), api('/api/student/classes'), api('/api/payment-account')]);
@@ -481,28 +545,53 @@
       state.data = { ...dashboard, ...payroll };
       state.classes = classes.classes || [];
     } else {
-      const [dashboard, rates, catalog, payroll, users, tuition, academic, paymentAccount, sheetSyncStatus] = await Promise.all([
-        api('/api/admin/dashboard'), api('/api/admin/rates'), api('/api/courses'), api('/api/admin/payroll-runs'), api('/api/admin/users'), api('/api/admin/invoices'), api('/api/admin/academic'), api('/api/payment-account'), api('/api/admin/sheet-sync/status')
-      ]);
-      state.data = { ...dashboard, ...rates, ...payroll, invoices: tuition.invoices || dashboard.invoices || [], receipts: tuition.receipts || [], users: academic.users || users.users || [], unbilled_enrollments: tuition.enrollments || [] };
-      state.courses = catalog.courses || [];
+      // A deep link should display its selected section and a safe loading
+      // placeholder as promptly as the overview does.
+      const quickOverview = initial;
+      const dashboardRequest = api('/api/admin/dashboard?compact=1').then((value) => ({ value }), (error) => ({ error }));
+      const detailsRequest = Promise.all([
+        api('/api/admin/rates'), api('/api/admin/payroll-runs'), api('/api/admin/invoices'),
+        api('/api/admin/academic'), api('/api/payment-account')
+      ]).then((value) => ({ value }), (error) => ({ error }));
+      // The small first-screen read is optional: a failure or a slower reply
+      // must never hold up the existing complete workspace.
+      const overviewRequest = quickOverview && !overviewCounts
+        ? api('/api/admin/overview').then((value) => ({ value }), (error) => ({ error }))
+        : null;
+      if (quickOverview) {
+        const first = overviewCounts
+          ? { kind: 'overview', result: { value: overviewCounts } }
+          : await Promise.race([
+            overviewRequest.then((result) => ({ kind: 'overview', result })),
+            Promise.all([dashboardRequest, detailsRequest]).then(() => ({ kind: 'full' }))
+          ]);
+        if (first.kind === 'overview' && !first.result.error) {
+          state.data = { overview_counts: first.result.value, invoices: [], users: [], staff: [] };
+          state.courses = [];
+          state.academic = null;
+          state.classes = [];
+          state.paymentAccount = null;
+          setAdminDetailsBusy(true);
+          renderWorkspace();
+          for (const button of $('overview')?.querySelectorAll('.action-queue button') || []) button.disabled = true;
+          $('overview')?.append(element('p', 'muted', 'กำลังโหลดรายละเอียดรายการอื่น ๆ…'));
+        }
+      }
+      const dashboardResult = await dashboardRequest;
+      if (dashboardResult.error) throw dashboardResult.error;
+      const dashboard = dashboardResult.value;
+      const details = await detailsRequest;
+      if (details.error) throw details.error;
+      const [rates, payroll, tuition, academic, paymentAccount] = details.value;
+      state.data = { ...dashboard, ...rates, ...payroll, invoices: tuition.invoices || dashboard.invoices || [], receipts: tuition.receipts || [], users: academic.users || [], staff: (academic.users || []).filter((person) => person.role === 'teacher' || person.role === 'admin'), unbilled_enrollments: tuition.enrollments || [] };
+      state.courses = (academic.courses || []).filter((course) => course.active);
       state.academic = academic;
       state.classes = academic.classes || [];
       state.paymentAccount = paymentAccount.payment_account || null;
-      state.sheetSyncStatus = sheetSyncStatus;
+      if (quickOverview) setAdminDetailsBusy(false);
     }
-    const hadView = Boolean(state.viewTargetId);
-    const priorScrollY = window.scrollY;
-    $('live-content').innerHTML = formLayout();
-    installLivePanels();
-    if (role === 'student') renderStudent();
-    else if (role === 'teacher') renderTeacher();
-    else renderAdmin();
-    if (role !== 'teacher') renderPaymentAccount();
-    if (role === 'admin') { renderSheetSyncStatus(); updateAdminPaymentAlert(state.data.pending_payment_claims || []); }
-    const target = state.viewTargetId || hashTarget() || 'overview';
-    if (!showView(target, { historyMode: hadView ? 'none' : 'replace', scroll: !hadView })) showView('overview', { historyMode: 'replace', scroll: !hadView });
-    if (hadView) window.scrollTo({ top: priorScrollY, behavior: 'auto' });
+    renderWorkspace();
+    if (role === 'admin') fetchSheetSyncStatus();
   }
 
   function renderStudent() {
@@ -798,6 +887,7 @@
     const unbilled = state.data.unbilled_enrollments || [];
     const claims = state.data.pending_payment_claims || [];
     const times = state.data.pending_time_entries || [];
+    const overview = state.data.overview_counts || null;
     const rates = state.data.rates || [];
     const runs = state.data.payroll_runs || [];
     const users = state.data.users || [];
@@ -848,21 +938,21 @@
       const query = event.currentTarget.value.trim().toLocaleLowerCase('th');
       for (const row of userBody.rows) row.hidden = Boolean(query) && !row.textContent.toLocaleLowerCase('th').includes(query);
     });
-    $('admin-outstanding').textContent = thaiMoney(invoices.filter((item) => item.status !== 'void').reduce((sum, item) => sum + Math.max(0, item.amount_satang - item.paid_satang), 0));
-    $('admin-outstanding').nextElementSibling.textContent = `จาก ${invoices.length} ใบแจ้งยอดล่าสุดที่แสดง`;
-    $('admin-claim-count').textContent = String(claims.length);
-    $('admin-time-count').textContent = String(times.length);
+    $('admin-outstanding').textContent = thaiMoney(overview ? overview.outstanding_satang : invoices.filter((item) => item.status !== 'void').reduce((sum, item) => sum + Math.max(0, item.amount_satang - item.paid_satang), 0));
+    $('admin-outstanding').nextElementSibling.textContent = `จาก ${overview ? overview.invoice_count : invoices.length} ใบแจ้งยอดล่าสุดที่แสดง`;
+    $('admin-claim-count').textContent = String(overview ? overview.pending_claims : claims.length);
+    $('admin-time-count').textContent = String(overview ? overview.pending_times : times.length);
     const overdue = invoices.filter((item) => item.status !== 'void' && item.due_date < bangkokToday() && item.amount_satang > item.paid_satang);
     const queue = element('section', 'panel action-queue');
     queue.append(element('h2', '', 'งานที่ต้องจัดการ'));
     queue.append(element('p', 'muted', 'จำนวนแสดงจากข้อมูลล่าสุดที่โหลดในหน้านี้ กดเพื่อไปยังรายการที่เกี่ยวข้อง'));
     const queueGrid = element('div', 'queue-grid');
     queueGrid.append(
-      queueItem(unbilled.length, 'รอแจ้งยอดค่าเรียน', 'นักเรียนสมัครคอร์สแล้ว ผู้ดูแลต้องกำหนดยอด', 'admin-finance', true),
-      queueItem(claims.length, 'รอตรวจการชำระ', 'ตรวจเงินและเลขอ้างอิงก่อนกดยืนยัน', 'admin-claims', true),
-      queueItem(times.length, 'รอตรวจเวลาสอน', 'เช็กชื่อและตรวจอัตราก่อนอนุมัติ', 'admin-teaching', true),
-      queueItem(overdue.length, 'ใบแจ้งยอดเลยกำหนด', 'ยังมียอดคงเหลือที่ต้องติดตาม', 'admin-invoices', true),
-      queueItem(Number(notificationCounts.dead) || 0, 'อีเมลส่งไม่สำเร็จ', 'ตรวจสถานะการแจ้งเตือน', 'admin-notifications', true)
+      queueItem(overview ? overview.unbilled_count : unbilled.length, 'รอแจ้งยอดค่าเรียน', 'นักเรียนสมัครคอร์สแล้ว ผู้ดูแลต้องกำหนดยอด', 'admin-finance', true),
+      queueItem(overview ? overview.pending_claims : claims.length, 'รอตรวจการชำระ', 'ตรวจเงินและเลขอ้างอิงก่อนกดยืนยัน', 'admin-claims', true),
+      queueItem(overview ? overview.pending_times : times.length, 'รอตรวจเวลาสอน', 'เช็กชื่อและตรวจอัตราก่อนอนุมัติ', 'admin-teaching', true),
+      queueItem(overview ? overview.overdue_count : overdue.length, 'ใบแจ้งยอดเลยกำหนด', 'ยังมียอดคงเหลือที่ต้องติดตาม', 'admin-invoices', true),
+      queueItem(overview ? overview.failed_notices : Number(notificationCounts.dead) || 0, 'อีเมลส่งไม่สำเร็จ', 'ตรวจสถานะการแจ้งเตือน', 'admin-notifications', true)
     );
     queue.append(queueGrid);
     $('overview').querySelector('.stats').after(queue);
@@ -889,6 +979,7 @@
       table.append(head, body); wrap.append(table); notificationPanel.append(wrap);
     } else notificationPanel.append(element('p', 'muted', 'ยังไม่มีอีเมลส่งไม่สำเร็จ'));
     queue.after(notificationPanel);
+    if (overview) notificationPanel.hidden = true;
     const enrollmentSelect = $('invoice-enrollment'); option(enrollmentSelect, '', 'เลือกนักเรียนและคอร์ส');
     for (const enrollment of unbilled) option(enrollmentSelect, enrollment.enrollment_id, `${enrollment.student_name} · ${enrollment.course_title}`);
     enrollmentSelect.addEventListener('change', () => {
@@ -1697,9 +1788,15 @@
 
   async function start() {
     document.body.classList.add('live-ready', 'loading-screen');
-    document.body.innerHTML = '<main class="live-loading"><img src="physics-plus-logo-yellow-black.png" alt="Physics Plus"><p>กำลังตรวจสอบบัญชี…</p></main>';
+    const bootstrap = document.getElementById('pp-auth-bootstrap');
+    let me = null;
+    if (bootstrap) {
+      try { me = JSON.parse(bootstrap.textContent); }
+      catch { /* Fall back to the authenticated API when markup is stale. */ }
+    }
+    document.body.innerHTML = '<main class="live-loading"><img src="physics-plus-logo-yellow-black.jpg" alt="Physics Plus"><p>กำลังตรวจสอบบัญชี…</p></main>';
     try {
-      const me = await api('/api/me');
+      if (!me) me = await api('/api/me');
       if (!me.authenticated || !me.user) { location.replace('index.html'); return; }
       if (!roleNames[me.user.role]) throw new Error('บทบาทบัญชีไม่ถูกต้อง');
       state.me = me.user; state.csrf = me.csrf_token;
@@ -1708,7 +1805,8 @@
         $('live-content').append(element('section', 'panel', 'กรุณาเปลี่ยนรหัสผ่านชั่วคราวก่อนใช้งาน'));
         passwordDialog(true); return;
       }
-      await load();
+      $('live-content').append(element('section', 'panel', 'กำลังโหลดข้อมูลล่าสุด…'));
+      await load({ initial: true, overviewCounts: me.overview_counts || null });
       window.setTimeout(() => document.body.classList.add('dashboard-mounted'), 520);
     } catch (error) {
       document.body.innerHTML = '';

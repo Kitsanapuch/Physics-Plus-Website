@@ -21,6 +21,7 @@ from backend import (
     COURSE_CATALOG,
     COURSE_SEED_MIGRATION,
     BRAND_CODES_MIGRATION,
+    STUDENT_CODE_MIGRATION,
     TEACHER_ROSTER_MIGRATION,
     PhysicsPlusApp,
     RATE_GRID,
@@ -33,6 +34,7 @@ from backend import (
     fail,
     migrate_outbox_schema,
     migrate_academic_schema,
+    migrate_student_codes,
     migrate_nullable_course_teachers,
     migrate_brand_codes,
     migrate_receipts,
@@ -51,6 +53,8 @@ CREATE TABLE IF NOT EXISTS login_throttle (
   attempts INTEGER NOT NULL CHECK(attempts >= 0)
 );
 """
+
+SHEET_INIT_REFRESH_MIGRATION = "sheet_sync_post_migration_refresh_2026_10_23"
 
 
 class LibsqlRow(tuple):
@@ -165,41 +169,41 @@ class PersistentRateLimiter:
     def __init__(self, owner: RemotePhysicsPlusApp) -> None:
         self.owner = owner
 
-    def check(self, key: str, limit: int, period: int) -> None:
+    def check(self, key: str, limit: int, period: int, *, conn=None) -> None:
         if limit < 1 or period < 1:
             raise ValueError("invalid rate limit")
         digest = hmac.new(
             self.owner.auth_token.encode("utf-8"), key.encode("utf-8"), hashlib.sha256
         ).hexdigest()
         current = now()
-        with self.owner.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            # Periodic bounded cleanup keeps this table from growing forever.
-            # Authentication still works if no cleanup is due in this request.
-            if current % 97 == 0:
-                conn.execute("DELETE FROM login_throttle WHERE window_started < ?", (current - 24 * 3600,))
-            row = conn.execute(
-                "SELECT window_started,attempts FROM login_throttle WHERE key_hash=?",
-                (digest,),
-            ).fetchone()
-            if row is None:
-                conn.execute(
-                    "INSERT INTO login_throttle(key_hash,window_started,attempts) VALUES(?,?,1)",
-                    (digest, current),
-                )
-            elif row["window_started"] <= current - period:
-                conn.execute(
-                    "UPDATE login_throttle SET window_started=?, attempts=1 WHERE key_hash=?",
-                    (current, digest),
-                )
-            elif row["attempts"] >= limit:
-                fail(429, "rate_limited", "Too many attempts; try again later")
-            else:
-                conn.execute(
-                    "UPDATE login_throttle SET attempts=attempts+1 WHERE key_hash=?",
-                    (digest,),
-                )
-            conn.commit()
+        if conn is None:
+            with self.owner.connect() as own_conn:
+                self._check(own_conn, digest, current, limit, period)
+        else:
+            self._check(conn, digest, current, limit, period)
+
+    @staticmethod
+    def _check(conn, digest: str, current: int, limit: int, period: int) -> None:
+        # Each key is one atomic write and commits independently. An identifier
+        # rejection must not undo the IP attempt that was counted first.
+        # Periodic bounded cleanup keeps this table from growing forever.
+        if current % 97 == 0:
+            conn.execute("DELETE FROM login_throttle WHERE window_started < ?", (current - 24 * 3600,))
+        cutoff = current - period
+        accepted = conn.execute(
+            "INSERT INTO login_throttle(key_hash,window_started,attempts) VALUES(?,?,1) "
+            "ON CONFLICT(key_hash) DO UPDATE SET "
+            "window_started=CASE WHEN login_throttle.window_started<=? "
+            "THEN excluded.window_started ELSE login_throttle.window_started END, "
+            "attempts=CASE WHEN login_throttle.window_started<=? "
+            "THEN 1 ELSE login_throttle.attempts+1 END "
+            "WHERE login_throttle.window_started<=? OR login_throttle.attempts<? "
+            "RETURNING attempts",
+            (digest, current, cutoff, cutoff, cutoff, limit),
+        ).fetchone()
+        if accepted is None:
+            fail(429, "rate_limited", "Too many attempts; try again later")
+        conn.commit()
 
 
 class RemotePhysicsPlusApp(PhysicsPlusApp):
@@ -222,9 +226,11 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
         self.auth_token = auth_token
         self._sheet_schema_ready = False
         self._sheet_schema_lock = threading.Lock()
-        # Historical migrations remain an explicit management step. The two
-        # new additive sync/settings tables are safe to create once on the
-        # first connection of each warm worker.
+        self._student_code_ready = False
+        self._student_code_lock = threading.Lock()
+        # Broad historical migrations remain an explicit management step.
+        # Additive sync/settings tables and the narrow student-code migration
+        # are safe to apply once on the first connection of each warm worker.
         super().__init__(Path("/__remote_turso__"), origin, None)
         for extra in extra_origins or set():
             parsed_origin = urlsplit(extra)
@@ -261,19 +267,50 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             enabled = connection.execute("PRAGMA foreign_keys").fetchone()
             if enabled is None or enabled[0] != 1:
                 raise RuntimeError("Remote database must enforce foreign keys")
-            # New additive tables are created once per warm worker. This keeps
-            # existing production databases writable before a manual init can
-            # be run, without running the historical migrations on cold start.
-            if not self._sheet_schema_ready:
-                with self._sheet_schema_lock:
-                    if not self._sheet_schema_ready:
-                        connection.executescript(SHEET_SYNC_SCHEMA)
-                        users_exists = connection.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
-                        ).fetchone()
-                        if users_exists:
-                            seed_payment_account_and_sheet_queue(connection)
-                        self._sheet_schema_ready = True
+            # A deployed database already has these tables and migration
+            # marker. Inspect it once per warm worker instead of issuing DDL,
+            # 16 seed writes and a migration transaction on every cold start.
+            if not self._sheet_schema_ready or not self._student_code_ready:
+                present = {row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                    "('users','app_migrations','code_counters','audit_events',"
+                    "'sheet_sync_state','payment_account')"
+                ).fetchall()}
+                if not self._sheet_schema_ready:
+                    with self._sheet_schema_lock:
+                        if not self._sheet_schema_ready:
+                            if {"sheet_sync_state", "payment_account"}.issubset(present):
+                                seed_needed = connection.execute(
+                                    "SELECT (SELECT COUNT(*) FROM sheet_sync_state),"
+                                    "(SELECT COUNT(*) FROM payment_account WHERE id=1)"
+                                ).fetchone()
+                            else:
+                                connection.executescript(SHEET_SYNC_SCHEMA)
+                                seed_needed = (0, 0)
+                                present.update({"sheet_sync_state", "payment_account"})
+                            if "users" in present and (seed_needed[0] < len(SHEET_DATASETS) or seed_needed[1] != 1):
+                                seed_payment_account_and_sheet_queue(connection)
+                            self._sheet_schema_ready = True
+                # This narrow migration changes only visible student codes.
+                # The marker check is one read on current deployments; older
+                # schemas still receive the full migration before serving.
+                if not self._student_code_ready:
+                    with self._student_code_lock:
+                        if not self._student_code_ready:
+                            required = {"users", "app_migrations", "code_counters",
+                                        "audit_events", "sheet_sync_state"}
+                            if required.issubset(present):
+                                applied = connection.execute(
+                                    "SELECT 1 FROM app_migrations WHERE key=?",
+                                    (STUDENT_CODE_MIGRATION,),
+                                ).fetchone()
+                                if applied:
+                                    self._student_code_ready = True
+                                elif any(row[1] == "public_code" for row in connection.execute(
+                                    "PRAGMA table_info(users)"
+                                ).fetchall()):
+                                    migrate_student_codes(connection)
+                                    self._student_code_ready = True
             return ClosingRemoteConnection(connection)
         except BaseException:
             connection.close()
@@ -285,6 +322,7 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             conn.executescript(SCHEMA + THROTTLE_SCHEMA)
             migrate_outbox_schema(conn)
             migrate_academic_schema(conn)
+            migrate_student_codes(conn)
             migrate_nullable_course_teachers(conn)
             migrate_brand_codes(conn)
             seed_initial_teachers(conn)
@@ -320,6 +358,20 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                     "activate_owner_grid",
                     {"effective_from": RATE_GRID_EFFECTIVE_FROM, "tiers": len(RATE_GRID)},
                 )
+            # Earlier migrations can change exported rows without going through
+            # audit(). Refresh a previously clean mirror once after those
+            # migrations, while leaving an unsynced initial backfill alone.
+            if not conn.execute(
+                "SELECT 1 FROM app_migrations WHERE key=?", (SHEET_INIT_REFRESH_MIGRATION,)
+            ).fetchone():
+                if conn.execute(
+                    "SELECT 1 FROM sheet_sync_state WHERE synced_revision>0 LIMIT 1"
+                ).fetchone():
+                    self._queue_all_sheet_datasets(conn)
+                conn.execute(
+                    "INSERT INTO app_migrations(key,applied_at) VALUES(?,?)",
+                    (SHEET_INIT_REFRESH_MIGRATION, now()),
+                )
             conn.commit()
 
     def check_remote(self) -> dict:
@@ -328,6 +380,15 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             marker = conn.execute(
                 "SELECT 1 FROM app_migrations WHERE key=?", (RATE_GRID_MIGRATION,)
             ).fetchone()
+            student_code_marker = conn.execute(
+                "SELECT 1 FROM app_migrations WHERE key=?", (STUDENT_CODE_MIGRATION,)
+            ).fetchone()
+            invalid_student_codes = conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role='student' AND "
+                "(public_code IS NULL OR length(public_code)!=5 OR "
+                "public_code NOT GLOB '[0-9][0-9][0-9][0-9][0-9]' OR "
+                "substr(public_code,3,3)='000')"
+            ).fetchone()[0]
             admin_count, active_admin_count = conn.execute(
                 "SELECT COUNT(*), COALESCE(SUM(status='active'),0) FROM users WHERE role='admin'"
             ).fetchone()
@@ -372,7 +433,8 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                 (BRAND_CODES_MIGRATION, TEACHER_ROSTER_MIGRATION, COURSE_SEED_MIGRATION),
             ).fetchone()[0]
             return {
-                "schema_initialized": bool(marker) and bool(throttle_table) and
+                "schema_initialized": bool(marker) and bool(student_code_marker) and
+                                      invalid_student_codes == 0 and bool(throttle_table) and
                                       {"id", "first_attempt_at", "lease_token"}.issubset(outbox_columns) and
                                       {"dataset", "revision", "synced_revision", "lease_token"}.issubset(sheet_columns) and
                                       sheet_dataset_count >= len(SHEET_DATASETS) and payment_account_count == 1 and
@@ -388,6 +450,7 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                 "catalog_offering_count": len(COURSE_CATALOG),
                 "invalid_active_course_count": invalid_active,
                 "missing_public_code_count": missing_codes,
+                "invalid_student_code_count": invalid_student_codes,
                 "payments_missing_receipts": payments_missing_receipts,
                 "sheet_dataset_count": sheet_dataset_count,
                 "payment_account_count": payment_account_count,

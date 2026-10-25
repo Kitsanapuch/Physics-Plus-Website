@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 
 
 REPORT_HEADERS = {
-    "students": ("id", "student_code", "name", "email", "status", "grade", "school", "guardian_name", "guardian_phone", "guardian_relationship", "created_at"),
+    "students": ("student_code", "name", "email", "status", "grade", "school", "guardian_name", "guardian_phone", "guardian_relationship", "created_at", "internal_id"),
     "teachers": ("id", "teacher_code", "name", "email", "status", "created_at"),
-    "courses": ("id", "course_code", "subject_code", "title", "subject", "level", "price_satang", "capacity", "active", "teacher_name", "teacher_code", "created_at"),
+    "courses": ("course_code", "subject_code", "title", "subject", "level", "price_satang", "capacity", "active", "teacher_name", "teacher_code", "created_at", "internal_id"),
     "classes": ("id", "room_name", "starts_at", "ends_at", "status", "course_code", "subject_code", "course_title", "teacher_code", "teacher_name", "roster_count", "created_at", "cancellation_reason", "cancelled_at"),
     "class_rosters": ("class_id", "room_name", "course_code", "course_title", "student_code", "student_name", "attendance_status", "starts_at", "ends_at"),
     "enrollments": ("id", "course_code", "course_title", "student_code", "student_name", "student_email", "status", "created_at"),
@@ -41,6 +41,23 @@ REPORT_HEADERS = {
 assert tuple(REPORT_HEADERS) == SHEET_DATASETS
 TAB_TITLES = {dataset: "DB_" + dataset for dataset in SHEET_DATASETS}
 TAB_TITLES["payroll_summary"] = "DB_สรุปค่าจ้างครู"
+
+# Format numeric report fields for staff without changing the stored values.
+# Codes, bank account numbers and Unix timestamps deliberately stay as text or
+# unformatted values so that leading zeroes and identifiers remain intact.
+COMMA_INTEGER_HEADERS = {
+    "price_satang", "capacity", "roster_count", "amount_satang",
+    "break_minutes", "payable_minutes", "student_count",
+    "rate_satang_per_hour", "total_satang", "min_students", "max_students",
+    "submitted_count", "rejected_count", "approved_count", "approved_minutes",
+    "approved_unrun_satang", "draft_payroll_satang",
+    "finalized_payroll_satang", "paid_satang", "total_wages_due_satang",
+    "รอตรวจ (คาบ)", "ปฏิเสธ (คาบ)", "อนุมัติ (คาบ)",
+}
+COMMA_DECIMAL_HEADERS = {
+    "ชั่วโมงอนุมัติ", "ยังไม่เข้ารอบ (บาท)", "ร่างงวด (บาท)",
+    "รอโอน (บาท)", "จ่ายแล้ว (บาท)", "ค้างจ่าย (บาท)",
+}
 
 
 class SheetSyncError(Exception):
@@ -245,7 +262,12 @@ class GoogleSheetsClient:
         requests = []
         for dataset, rows in snapshots.items():
             headers = REPORT_HEADERS[dataset]
-            values = [list(headers)] + [[row.get(key) for key in headers] for row in rows]
+            # Show identifiers staff can recognize first. The UUID remains
+            # available for reconciliation, clearly labeled at the far right.
+            values = [list(headers)] + [
+                [row.get("id" if key == "internal_id" else key) for key in headers]
+                for row in rows
+            ]
             sheet = properties[TAB_TITLES[dataset]]
             sheet_id = sheet["sheetId"]
             grid = sheet.get("gridProperties", {})
@@ -285,13 +307,17 @@ class GoogleSheetsClient:
                     "textFormat": {"bold": True}}},
                 "fields": "userEnteredFormat.backgroundColor,userEnteredFormat.textFormat.bold",
             }})
-            if dataset == "payroll_summary":
+            for column_index, header in enumerate(headers):
+                if header not in COMMA_INTEGER_HEADERS and header not in COMMA_DECIMAL_HEADERS:
+                    continue
+                pattern = "#,##0.00" if header in COMMA_DECIMAL_HEADERS else "#,##0"
                 requests.append({"repeatCell": {
                     "range": {"sheetId": sheet_id, "startRowIndex": 1,
-                              "endRowIndex": row_count, "startColumnIndex": 8,
-                              "endColumnIndex": 13},
+                              "endRowIndex": row_count,
+                              "startColumnIndex": column_index,
+                              "endColumnIndex": column_index + 1},
                     "cell": {"userEnteredFormat": {"numberFormat": {
-                        "type": "NUMBER", "pattern": "#,##0.00"}}},
+                        "type": "NUMBER", "pattern": pattern}}},
                     "fields": "userEnteredFormat.numberFormat",
                 }})
         encoded = json.dumps({"requests": requests}, ensure_ascii=False, separators=(",", ":"))

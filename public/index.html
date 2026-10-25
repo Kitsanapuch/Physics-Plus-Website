@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#10110f">
   <title>Physics Plus — เข้าสู่พื้นที่การเรียนรู้</title>
-  <link rel="icon" href="physics-plus-logo-yellow-black.png">
-  <link rel="stylesheet" href="portal.css?v=17">
+  <link rel="icon" href="physics-plus-favicon.png">
+  <link rel="stylesheet" href="portal.css?v=18">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"><span>E = mc²</span><span>F = ma</span><span>∫ x dx</span></div>
   <header class="topbar">
-    <a class="brand" href="index.html" aria-label="Physics Plus หน้าแรก"><img src="physics-plus-logo-yellow-black.png" alt="โลโก้ Physics Plus"><span>Physics Plus<span class="brand-dot">.</span></span></a>
+    <a class="brand" href="index.html" aria-label="Physics Plus หน้าแรก"><img src="physics-plus-logo-yellow-black.jpg" alt="โลโก้ Physics Plus"><span>Physics Plus<span class="brand-dot">.</span></span></a>
     <nav aria-label="เมนูหลัก"><span class="nav-current">พื้นที่การเรียนรู้</span><button id="about-button" type="button">เกี่ยวกับเรา</button></nav>
   </header>
   <main class="portal-layout">
@@ -90,13 +90,18 @@ const modal=d.getElementById('info');function info(title,message){d.getElementBy
 d.getElementById('about-button').onclick=()=>info('พื้นที่เรียนรู้สำหรับเด็กมัธยม','Physics Plus สอนวิชาทั่วไป โดยเน้นนักเรียนระดับมัธยม นักเรียนสมัครบัญชีและสมัครเรียนได้ในระบบ ส่วนครูและผู้ดูแลใช้บัญชีที่สถาบันจัดให้');modal.querySelector('.close').onclick=()=>modal.close();modal.querySelector('.dialog-primary').onclick=()=>modal.close();
 const authButton=d.getElementById('enter-demo'),feedback=d.getElementById('auth-feedback');
 function authModeLabel(){if(liveAuth)d.getElementById('entry-label').textContent=registerMode()?'สร้างบัญชีนักเรียน':'เข้าสู่ระบบ'}
-async function activateLiveLogin(){try{
-  const r=await fetch('/api/me',{credentials:'same-origin',cache:'no-store'});if(!r.ok)throw new Error('api unavailable');const state=await r.json();if(!('authenticated' in state))throw new Error('api unavailable');
-  liveAuth=true;if(state.authenticated){location.replace('dashboard.html');return}
+async function activateLiveLogin(){
+  // The server still checks every login. Let people type while the optional
+  // existing-session check completes, so a slow database does not lock the form.
+  liveAuth=true;
   for(const el of ['email','password'])d.getElementById(el).disabled=false;selectTab(registerMode());
   d.querySelector('.prototype-note').textContent='นักเรียนสมัครได้เอง · ครูและผู้ดูแลใช้บัญชีที่สถาบันจัดให้';authButton.disabled=false;authButton.addEventListener('click',submitAuth);
   d.querySelectorAll('#email,#password,#full-name,#profile-fields input,#profile-fields select').forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')submitAuth(e)}));
-}catch{d.querySelector('.prototype-note').textContent='ติดต่อระบบไม่ได้ กรุณาลองใหม่ภายหลัง';d.getElementById('entry-label').textContent='ระบบยังไม่พร้อม';authButton.disabled=true}}
+  try{
+    const r=await fetch('/api/me',{credentials:'same-origin',cache:'no-store'});if(!r.ok)throw new Error('api unavailable');const state=await r.json();if(!('authenticated' in state))throw new Error('api unavailable');
+    if(state.authenticated&&!authBusy)location.replace('dashboard.html');
+  }catch{d.querySelector('.prototype-note').textContent='หากเข้าสู่ระบบไม่ได้ กรุณาลองอีกครั้งภายหลัง'}
+}
 async function submitAuth(e){if(!liveAuth||authBusy)return;e.preventDefault();const register=registerMode();const login=d.getElementById('email').value.trim();const password=d.getElementById('password').value;const name=d.getElementById('full-name').value.trim();
   const profile={grade:d.getElementById('student-grade').value,school:d.getElementById('student-school').value.trim(),guardian_name:d.getElementById('guardian-name').value.trim(),guardian_phone:d.getElementById('guardian-phone').value.trim(),guardian_relationship:d.getElementById('guardian-relationship').value};
   if(!login||!password||(register&&(!name||Object.values(profile).some(v=>!v)))){feedback.textContent='กรุณากรอกข้อมูลให้ครบ';return}
