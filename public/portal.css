@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap');
 :root{font-family:'Noto Sans Thai',Tahoma,sans-serif;color:#191919;background:#fbfaf8;font-synthesis:none}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;isolation:isolate}button,input,select,a{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}button,a{-webkit-tap-highlight-color:transparent}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #e8bf39;outline-offset:3px}[hidden]{display:none!important}
 .ambient{position:absolute;inset:88px 0 0;overflow:hidden;pointer-events:none;z-index:-1;background:radial-gradient(circle at 50% 48%,#fff 0%,#fbfaf8 68%)}.ambient span{position:absolute;font:italic 700 clamp(50px,7vw,120px) Georgia,serif;color:#cfb768;opacity:.1;white-space:nowrap}.ambient span:first-child{top:5%;left:3%;transform:rotate(-10deg)}.ambient span:nth-child(2){right:3%;top:28%;transform:rotate(9deg)}.ambient span:last-child{left:7%;bottom:10%;transform:rotate(8deg)}
@@ -180,3 +179,28 @@ dialog{background:#21231d;border-color:#efe1a949;color:#f7f4e6}dialog .close{col
 .motion-paused .auth-stage::before,.motion-paused .auth-stage::after,.motion-paused .auth-stage .auth-card::after,.motion-paused .auth-card.auth-switch>.auth-wave,.motion-paused .auth-card.auth-pulse>.auth-wave,.motion-paused .auth-card.auth-switch .auth-heading,.motion-paused .auth-card.auth-switch #auth-panel,.motion-paused .auth-stage .auth-card.is-submitting .enter-button::after{animation:none!important}
 .motion-paused .auth-stage .enter-button,.motion-paused .auth-stage .enter-button::after{transition:none!important}
 .motion-paused .auth-stage .enter-button:active:not(:disabled),.motion-paused .auth-stage .auth-card.is-submitting .enter-button:disabled{transform:none!important}
+
+/* Keep the reference's light-and-glass language while making the response to
+   focus and confirmation immediate, without a continuous full-card repaint. */
+.ambient span{will-change:auto}
+.auth-stage::before{will-change:auto}
+.auth-stage .auth-card{backdrop-filter:blur(14px) saturate(112%);-webkit-backdrop-filter:blur(14px) saturate(112%)}
+.auth-stage .field:focus-within{box-shadow:0 0 0 3px #f3d26432,0 8px 20px #0003}
+.auth-stage .auth-tabs button:focus-visible,.subjects button:focus-visible{outline:3px solid #ffe693;outline-offset:2px}
+.auth-stage .auth-card.is-confirmed .tiny-mark{background:#fff0a3;box-shadow:0 0 0 5px #f1d2562a,0 0 22px #f1d2569c}
+.auth-stage .auth-card.is-confirmed .enter-button{border-color:#fff5b7}
+.auth-stage .auth-card.is-confirmed .auth-feedback{color:#fff0ad;font-weight:700}
+@media(prefers-reduced-motion:no-preference){
+  .auth-stage .auth-card.is-confirmed .tiny-mark{animation:auth-confirm .32s cubic-bezier(.2,.8,.2,1) both}
+  .auth-stage .auth-card.is-confirmed .enter-button{animation:auth-confirm-button .28s ease-out both}
+}
+@keyframes auth-confirm{0%{transform:scale(.7);opacity:.3}65%{transform:scale(1.12)}100%{transform:scale(1);opacity:1}}
+@keyframes auth-confirm-button{0%{transform:scale(.985)}65%{transform:scale(1.015)}100%{transform:scale(1)}}
+@media(max-width:759px){.auth-stage .auth-card{backdrop-filter:blur(8px) saturate(112%);-webkit-backdrop-filter:blur(8px) saturate(112%)}.ambient span{animation-duration:19s}}
+@media(prefers-reduced-motion:reduce){.auth-stage .auth-card.is-confirmed .tiny-mark,.auth-stage .auth-card.is-confirmed .enter-button{animation:none!important}}
+.motion-paused .auth-stage .auth-card.is-confirmed .tiny-mark,.motion-paused .auth-stage .auth-card.is-confirmed .enter-button{animation:none!important}
+
+/* The card's translucent gradient keeps its glass appearance. Avoid blurring
+   the whole form on every frame while the light streak behind it moves. */
+.auth-stage .auth-card{backdrop-filter:none;-webkit-backdrop-filter:none;animation:auth-enter-fast .24s ease-out both}
+@keyframes auth-enter-fast{from{opacity:.75;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}

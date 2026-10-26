@@ -88,6 +88,70 @@ class RemoteLoginLatencyTests(unittest.TestCase):
         self.assertEqual(self._attempts("ip:192.0.2.1"), 2)
         self.assertEqual(self._attempts("login:physicsplus"), 2)
 
+    def test_anonymous_me_and_protected_page_do_not_open_turso(self) -> None:
+        before = self.connections
+        self.assertEqual(self.owner.static_auth("/dashboard.html", ""), ("login", None))
+        self.assertEqual(self.owner.static_auth("/dashboard.html", "pp_session=malformed"),
+                         ("login", None))
+        headers = {"host": "school.example"}
+        me = self.owner.handle("GET", "/api/me", None, headers, "192.0.2.1")
+        self.assertEqual(me.body, {"authenticated": False})
+        other = self.owner.handle("GET", "/api/student/dashboard", None, headers, "192.0.2.1")
+        self.assertEqual(other.status, 401)
+        self.assertEqual(self.connections, before)
+
+    def test_credential_submission_does_not_read_stale_cookie_session(self) -> None:
+        first = self._login(password="SafeTestPassword123!")
+        cookie = first.headers["Set-Cookie"].split(";", 1)[0]
+        self.statements.clear()
+        second = self.owner.handle(
+            "POST", "/api/auth/login",
+            {"login": "physicsplus", "password": "SafeTestPassword123!"},
+            {"host": "school.example", "origin": "https://school.example", "cookie": cookie},
+            "192.0.2.1",
+        )
+        self.assertEqual(second.status, 200)
+        self.assertFalse(any("FROM sessions s JOIN users u" in statement
+                             for statement in self.statements))
+
+    def test_warm_connection_enables_foreign_keys_without_rechecking_driver(self) -> None:
+        self.statements.clear()
+        with self.owner.connect() as conn:
+            self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
+        statements = [statement.strip().upper() for statement in self.statements]
+        self.assertIn("PRAGMA FOREIGN_KEYS=ON", statements)
+        self.assertNotIn("PRAGMA FOREIGN_KEYS", statements)
+        with self.owner.connect() as conn:
+            self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+
+    def test_expired_sessions_are_cleaned_by_insert_without_extra_round_trip(self) -> None:
+        with self.owner.connect() as conn:
+            admin_id = conn.execute("SELECT id FROM users WHERE role='admin'").fetchone()[0]
+            conn.execute("INSERT INTO sessions VALUES(?,?,?,?,?)",
+                         ("expired-token", admin_id, "expired-csrf", 1, 2))
+        self.statements.clear()
+        login = self._login(password="SafeTestPassword123!")
+        self.assertEqual(login.status, 200, login.body)
+        self.assertFalse(any(statement.strip().upper().startswith(
+            "DELETE FROM SESSIONS WHERE EXPIRES_AT") for statement in self.statements))
+        with self.owner.connect() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM sessions WHERE token_hash='expired-token'").fetchone())
+
+    def test_cold_worker_installs_missing_session_trigger_once(self) -> None:
+        with self.owner.connect() as conn:
+            conn.execute("DROP TRIGGER sessions_cleanup_expired")
+        cold = self._owner()
+        with cold.connect() as conn:
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                "AND name='sessions_cleanup_expired'"
+            ).fetchone())
+        self.statements.clear()
+        with cold.connect() as conn:
+            self.assertEqual(conn.execute("SELECT 1").fetchone()[0], 1)
+        self.assertFalse(any(statement.strip().upper().startswith("CREATE TRIGGER")
+                             for statement in self.statements))
+
     def test_ip_and_identifier_limits_still_count_independently(self) -> None:
         for _ in range(10):
             self.assertEqual(self._login().status, 401)
@@ -105,6 +169,42 @@ class RemoteLoginLatencyTests(unittest.TestCase):
         self.assertEqual(self._login(ip="192.0.2.2").status, 429)
         self.assertEqual(self._attempts("ip:192.0.2.2"), 1)
         self.assertEqual(self._attempts("login:physicsplus"), 10)
+
+    def test_login_limits_share_one_atomic_remote_write(self) -> None:
+        self.statements.clear()
+        self.owner.limiter.check_login_attempt("192.0.2.50", "newuser")
+        throttle_writes = [statement for statement in self.statements
+                           if "INSERT INTO login_throttle" in statement]
+        self.assertEqual(len(throttle_writes), 1, throttle_writes)
+        self.assertEqual(self._attempts("ip:192.0.2.50"), 1)
+        self.assertEqual(self._attempts("login:newuser"), 1)
+
+    def test_last_available_ip_attempt_also_counts_identifier(self) -> None:
+        for index in range(19):
+            self.owner.limiter.check_login_attempt("192.0.2.51", f"user{index}")
+        self.owner.limiter.check_login_attempt("192.0.2.51", "finaluser")
+        self.assertEqual(self._attempts("ip:192.0.2.51"), 20)
+        self.assertEqual(self._attempts("login:finaluser"), 1)
+        with self.assertRaises(ApiError) as blocked:
+            self.owner.limiter.check_login_attempt("192.0.2.51", "anotheruser")
+        self.assertEqual(blocked.exception.status, 429)
+        self.assertEqual(self._attempts("ip:192.0.2.51"), 20)
+        self.assertEqual(self._attempts("login:anotheruser"), 0)
+
+    def test_parallel_login_limits_cannot_exceed_identifier_limit(self) -> None:
+        def attempt(_index: int) -> int:
+            try:
+                self.owner.limiter.check_login_attempt("192.0.2.52", "paralleluser")
+                return 200
+            except ApiError as exc:
+                return exc.status
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            statuses = list(pool.map(attempt, range(14)))
+        self.assertEqual(statuses.count(200), 10)
+        self.assertEqual(statuses.count(429), 4)
+        self.assertEqual(self._attempts("ip:192.0.2.52"), 14)
+        self.assertEqual(self._attempts("login:paralleluser"), 10)
 
     def test_malformed_identifier_counts_only_the_ip_attempt(self) -> None:
         malformed_email = self._login(login="a@", ip="192.0.2.30")
@@ -246,6 +346,45 @@ class RemoteLoginLatencyTests(unittest.TestCase):
             "pending_claims": 0, "pending_times": 0, "unbilled_count": 0,
             "failed_notices": 0,
         })
+
+    def test_admin_overview_counts_older_invoices_and_all_unbilled_courses(self) -> None:
+        with self.owner.connect() as conn:
+            admin = conn.execute("SELECT id,password_hash FROM users WHERE role='admin'").fetchone()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO users(id,email,public_code,name,password_hash,role,created_at) "
+                "VALUES(?,?,?,?,?,'student',?)",
+                ("student-many", "many@example.com", "26001", "Student", admin["password_hash"], now()),
+            )
+            for index in range(501):
+                course_id = f"course-{index}"
+                conn.execute(
+                    "INSERT INTO courses(id,title,subject,level,price_satang,capacity,created_at) "
+                    "VALUES(?,?,?,'middle',10000,13,?)",
+                    (course_id, f"Course {index}", "math", index),
+                )
+                conn.execute(
+                    "INSERT INTO enrollments(id,course_id,student_id,created_at) VALUES(?,?,?,?)",
+                    (f"enrollment-{index}", course_id, "student-many", index),
+                )
+                conn.execute(
+                    "INSERT INTO invoices(id,invoice_number,student_id,description,amount_satang,"
+                    "status,due_date,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (f"invoice-{index}", f"INV-{index}", "student-many", "Tuition", 10000,
+                     "unpaid" if index == 0 else "void", "2020-01-01", index),
+                )
+            conn.execute(
+                "INSERT INTO payments(id,invoice_id,amount_satang,method,reference,recorded_by,recorded_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                ("payment-oldest", "invoice-0", 2500, "bank_transfer", "OLD-1", admin["id"], now()),
+            )
+            conn.commit()
+        with self.owner.connect() as conn:
+            result = self.owner._admin_overview(conn)
+        self.assertEqual(result.body["invoice_count"], 501)
+        self.assertEqual(result.body["outstanding_satang"], 7500)
+        self.assertEqual(result.body["overdue_count"], 1)
+        self.assertEqual(result.body["unbilled_count"], 501)
 
 
 if __name__ == "__main__":

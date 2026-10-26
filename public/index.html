@@ -4,21 +4,34 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#10110f">
-  <title>Physics Plus — เข้าสู่พื้นที่การเรียนรู้</title>
+  <title>Physics Plus | เรียนพิเศษ ม.ต้น–ม.ปลาย</title>
+  <meta name="description" content="Physics Plus ร้านสอนพิเศษสำหรับนักเรียนมัธยม ม.ต้นเรียนวิทยาศาสตร์ คณิตศาสตร์ และภาษาอังกฤษ ม.ปลายเรียนฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และภาษาอังกฤษ">
+  <link rel="canonical" href="https://physicsplus.vercel.app/">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="th_TH">
+  <meta property="og:site_name" content="Physics Plus">
+  <meta property="og:title" content="Physics Plus | เรียนพิเศษ ม.ต้น–ม.ปลาย">
+  <meta property="og:description" content="ร้านสอนพิเศษ Physics Plus สำหรับนักเรียนมัธยม ครบทั้งวิทยาศาสตร์ ฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และภาษาอังกฤษ">
+  <meta property="og:url" content="https://physicsplus.vercel.app/">
+  <meta property="og:image" content="https://physicsplus.vercel.app/physics-plus-logo-yellow-black.jpg">
+  <meta name="twitter:card" content="summary">
   <link rel="icon" href="physics-plus-favicon.png">
-  <link rel="stylesheet" href="portal.css?v=18">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="portal.css?v=21">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" media="print" onload="this.media='all'">
 </head>
 <body>
   <div class="ambient" aria-hidden="true"><span>E = mc²</span><span>F = ma</span><span>∫ x dx</span></div>
   <header class="topbar">
-    <a class="brand" href="index.html" aria-label="Physics Plus หน้าแรก"><img src="physics-plus-logo-yellow-black.jpg" alt="โลโก้ Physics Plus"><span>Physics Plus<span class="brand-dot">.</span></span></a>
+    <a class="brand" href="index.html" aria-label="Physics Plus หน้าแรก"><img src="physics-plus-logo-yellow-black.jpg" alt="โลโก้ Physics Plus" width="42" height="42" decoding="async"><span>Physics Plus<span class="brand-dot">.</span></span></a>
     <nav aria-label="เมนูหลัก"><span class="nav-current">พื้นที่การเรียนรู้</span><button id="about-button" type="button">เกี่ยวกับเรา</button></nav>
   </header>
   <main class="portal-layout">
     <section class="story" aria-labelledby="hero-title">
       <div class="story-top"><span class="mini-line"></span><span>PHYSICS PLUS · LEARNING SPACE</span></div>
       <h1 id="hero-title">เรียนให้เข้าใจ<br><span>ไปได้ไกลกว่าเดิม<span class="dot">.</span></span></h1>
-      <p>พื้นที่เรียนรู้สำหรับนักเรียนมัธยม ครบทั้งฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และวิชาทั่วไป</p>
+      <p>Physics Plus สอนพิเศษระดับมัธยม: ม.ต้นเรียนวิทยาศาสตร์ คณิตศาสตร์ และภาษาอังกฤษ; ม.ปลายเรียนฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และภาษาอังกฤษ</p>
       <div class="subjects" role="group" aria-label="สำรวจกลุ่มวิชาที่สอน"><button type="button" class="active" data-subject="physics" aria-pressed="true">ฟิสิกส์</button><button type="button" data-subject="chemistry" aria-pressed="false">เคมี</button><button type="button" data-subject="biology" aria-pressed="false">ชีวะ</button><button type="button" data-subject="math" aria-pressed="false">คณิตศาสตร์</button><button type="button" data-subject="general" aria-pressed="false">ภาษาอังกฤษ</button></div>
       <div class="subject-display" aria-live="polite">
         <div class="subject-display-copy"><span class="subject-kicker">สำรวจวิชาของเรา <span class="subject-number" id="subject-number">01 / 05</span></span><h2 id="subject-title">ฟิสิกส์</h2><p id="subject-description">เข้าใจแรง การเคลื่อนที่ และพลังงานผ่านโจทย์ที่เห็นภาพ</p></div>
@@ -56,15 +69,15 @@
   <dialog id="info"><button class="close" aria-label="ปิด">×</button><p class="eyebrow">PHYSICS PLUS</p><h2 id="info-title">พื้นที่เรียนรู้สำหรับเด็กมัธยม</h2><p id="info-text"></p><button class="dialog-primary">เข้าใจแล้ว</button></dialog>
 <script>
 const d=document, tabs=[d.getElementById('login-tab'),d.getElementById('register-tab')];
-let liveAuth=false,authBusy=false;
+let liveAuth=false,authBusy=false,subjectAnimationFrame=0,waveAnimationFrame=0,sessionCheckController=null;
 const subjectContent={physics:{number:'01 / 05',title:'ฟิสิกส์',description:'เข้าใจแรง การเคลื่อนที่ และพลังงานผ่านโจทย์ที่เห็นภาพ',formula:'F = ma'},chemistry:{number:'02 / 05',title:'เคมี',description:'เชื่อมสูตรกับภาพของสารและปฏิกิริยา เพื่อแก้โจทย์อย่างมั่นใจ',formula:'H₂O'},biology:{number:'03 / 05',title:'ชีวะ',description:'มองเห็นความสัมพันธ์ของเซลล์ ระบบร่างกาย และสิ่งมีชีวิต',formula:'DNA'},math:{number:'04 / 05',title:'คณิตศาสตร์',description:'เข้าใจวิธีคิดทีละขั้น ก่อนลงมือฝึกโจทย์ด้วยตัวเอง',formula:'∫ x dx'},general:{number:'05 / 05',title:'ภาษาอังกฤษ',description:'ฝึกอ่าน เขียน และสื่อสารอย่างมั่นใจ พร้อมใช้สอบในระดับมัธยม',formula:'A → Z'}};
-function setSubject(key){const content=subjectContent[key];if(!content)return;for(const button of d.querySelectorAll('[data-subject]')){const active=button.dataset.subject===key;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active))}d.getElementById('subject-number').textContent=content.number;d.getElementById('subject-title').textContent=content.title;d.getElementById('subject-description').textContent=content.description;d.getElementById('subject-formula').textContent=content.formula;const showcase=d.querySelector('.subject-display');showcase.classList.remove('subject-switch');if(!d.documentElement.classList.contains('motion-paused')&&!matchMedia('(prefers-reduced-motion: reduce)').matches){void showcase.offsetWidth;showcase.classList.add('subject-switch')}}
+function setSubject(key){const content=subjectContent[key];if(!content)return;for(const button of d.querySelectorAll('[data-subject]')){const active=button.dataset.subject===key;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active))}d.getElementById('subject-number').textContent=content.number;d.getElementById('subject-title').textContent=content.title;d.getElementById('subject-description').textContent=content.description;d.getElementById('subject-formula').textContent=content.formula;const showcase=d.querySelector('.subject-display');cancelAnimationFrame(subjectAnimationFrame);showcase.classList.remove('subject-switch');if(!motionPaused&&!matchMedia('(prefers-reduced-motion: reduce)').matches){subjectAnimationFrame=requestAnimationFrame(()=>{subjectAnimationFrame=0;if(!motionPaused)showcase.classList.add('subject-switch')})}}
 d.querySelectorAll('[data-subject]').forEach(button=>button.addEventListener('click',()=>setSubject(button.dataset.subject)));
 const motionButton=d.getElementById('motion-control');let motionPaused=false;
-function setMotionPaused(paused){motionPaused=paused;d.documentElement.classList.toggle('motion-paused',paused);if(paused)d.querySelector('.auth-card').classList.remove('auth-switch','auth-pulse');motionButton.setAttribute('aria-pressed',String(paused));motionButton.setAttribute('aria-label',paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว');motionButton.querySelector('.motion-icon').textContent=paused?'▶':'Ⅱ';motionButton.querySelector('.motion-label').textContent=paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว'}
+function setMotionPaused(paused){motionPaused=paused;d.documentElement.classList.toggle('motion-paused',paused);if(paused){cancelAnimationFrame(subjectAnimationFrame);cancelAnimationFrame(waveAnimationFrame);d.querySelector('.auth-card').classList.remove('auth-switch','auth-pulse')}motionButton.setAttribute('aria-pressed',String(paused));motionButton.setAttribute('aria-label',paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว');motionButton.querySelector('.motion-icon').textContent=paused?'▶':'Ⅱ';motionButton.querySelector('.motion-label').textContent=paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว'}
 motionButton.addEventListener('click',()=>setMotionPaused(!motionPaused));
 function registerMode(){return tabs[1].getAttribute('aria-selected')==='true'}
-function playAuthWave(mode,x,y){const card=d.querySelector('.auth-card');card.classList.remove('auth-switch','auth-pulse');if(motionPaused||matchMedia('(prefers-reduced-motion: reduce)').matches)return;card.style.setProperty('--wave-x',x);card.style.setProperty('--wave-y',y);void card.offsetWidth;card.classList.add(mode)}
+function playAuthWave(mode,x,y){const card=d.querySelector('.auth-card');cancelAnimationFrame(waveAnimationFrame);card.classList.remove('auth-switch','auth-pulse');if(motionPaused||matchMedia('(prefers-reduced-motion: reduce)').matches)return;card.style.setProperty('--wave-x',x);card.style.setProperty('--wave-y',y);waveAnimationFrame=requestAnimationFrame(()=>{waveAnimationFrame=0;if(!motionPaused)card.classList.add(mode)})}
 function selectTab(register){
   const changed=registerMode()!==register;
   tabs.forEach((t,i)=>{const on=i===Number(register);t.classList.toggle('selected',on);t.setAttribute('aria-selected',String(on));t.tabIndex=on?0:-1});
@@ -96,19 +109,26 @@ async function activateLiveLogin(){
   liveAuth=true;
   for(const el of ['email','password'])d.getElementById(el).disabled=false;selectTab(registerMode());
   d.querySelector('.prototype-note').textContent='นักเรียนสมัครได้เอง · ครูและผู้ดูแลใช้บัญชีที่สถาบันจัดให้';authButton.disabled=false;authButton.addEventListener('click',submitAuth);
-  d.querySelectorAll('#email,#password,#full-name,#profile-fields input,#profile-fields select').forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')submitAuth(e)}));
+  d.querySelectorAll('#email,#password,#full-name,#profile-fields input').forEach(el=>el.addEventListener('keydown',e=>{if(e.key==='Enter')submitAuth(e)}));
+  // Check an existing session after the first paint; cancel it if the user
+  // starts a new login so the two requests do not compete for navigation.
+  const controller=new AbortController();sessionCheckController=controller;
   try{
-    const r=await fetch('/api/me',{credentials:'same-origin',cache:'no-store'});if(!r.ok)throw new Error('api unavailable');const state=await r.json();if(!('authenticated' in state))throw new Error('api unavailable');
+    await new Promise(resolve=>requestAnimationFrame(resolve));
+    if(controller.signal.aborted)return;
+    const r=await fetch('/api/me',{credentials:'same-origin',cache:'no-store',signal:controller.signal});if(!r.ok)throw new Error('api unavailable');const state=await r.json();if(!('authenticated' in state))throw new Error('api unavailable');
     if(state.authenticated&&!authBusy)location.replace('dashboard.html');
-  }catch{d.querySelector('.prototype-note').textContent='หากเข้าสู่ระบบไม่ได้ กรุณาลองอีกครั้งภายหลัง'}
+  }catch{if(!controller.signal.aborted)d.querySelector('.prototype-note').textContent='หากเข้าสู่ระบบไม่ได้ กรุณาลองอีกครั้งภายหลัง'}
+  finally{if(sessionCheckController===controller)sessionCheckController=null}
 }
 async function submitAuth(e){if(!liveAuth||authBusy)return;e.preventDefault();const register=registerMode();const login=d.getElementById('email').value.trim();const password=d.getElementById('password').value;const name=d.getElementById('full-name').value.trim();
   const profile={grade:d.getElementById('student-grade').value,school:d.getElementById('student-school').value.trim(),guardian_name:d.getElementById('guardian-name').value.trim(),guardian_phone:d.getElementById('guardian-phone').value.trim(),guardian_relationship:d.getElementById('guardian-relationship').value};
   if(!login||!password||(register&&(!name||Object.values(profile).some(v=>!v)))){feedback.textContent='กรุณากรอกข้อมูลให้ครบ';return}
   if(register&&!d.getElementById('email').checkValidity()){feedback.textContent='กรุณากรอกอีเมลที่ถูกต้อง';return}
   if(register&&password.length<12){feedback.textContent='รหัสผ่านต้องมีอย่างน้อย 12 ตัวอักษร';return}
+  sessionCheckController?.abort();
   authBusy=true;authButton.disabled=true;const card=d.querySelector('.auth-card');card.classList.remove('is-confirmed');card.classList.add('is-submitting');d.getElementById('entry-label').textContent=register?'กำลังสร้างบัญชี…':'กำลังเข้าสู่ระบบ…';feedback.textContent=register?'กำลังสร้างบัญชี…':'กำลังเข้าสู่ระบบ…';playAuthWave('auth-pulse','50%','77%');let success=false;
-  try{const r=await fetch(register?'/api/auth/register':'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(register?{name,email:login,password,...profile}:{login,password})});const body=await r.json();if(!r.ok||!body.authenticated){feedback.textContent=body.error?.message||'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจข้อมูลแล้วลองใหม่';return}success=true;card.classList.remove('is-submitting');card.classList.add('is-confirmed');d.getElementById('entry-label').textContent='สำเร็จ';feedback.textContent=register?'สร้างบัญชีสำเร็จ':'เข้าสู่ระบบสำเร็จ';if(!motionPaused&&!matchMedia('(prefers-reduced-motion: reduce)').matches)await new Promise(resolve=>setTimeout(resolve,160));location.assign('dashboard.html')}
+  try{const r=await fetch(register?'/api/auth/register':'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(register?{name,email:login,password,...profile}:{login,password})});const body=await r.json();if(!r.ok||!body.authenticated){feedback.textContent=body.error?.message||'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจข้อมูลแล้วลองใหม่';return}success=true;card.classList.remove('is-submitting');card.classList.add('is-confirmed');d.getElementById('entry-label').textContent='สำเร็จ';feedback.textContent=register?'สร้างบัญชีสำเร็จ':'เข้าสู่ระบบสำเร็จ';if(!motionPaused&&!matchMedia('(prefers-reduced-motion: reduce)').matches)await new Promise(resolve=>{let done=false;const finish=()=>{if(done)return;done=true;resolve()};setTimeout(finish,50);requestAnimationFrame(()=>requestAnimationFrame(finish))});location.assign('dashboard.html')}
   catch{feedback.textContent='ติดต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองอีกครั้ง'}finally{if(!success){card.classList.remove('is-submitting','is-confirmed');authBusy=false;authButton.disabled=false;authModeLabel()}}
 }
 activateLiveLogin();

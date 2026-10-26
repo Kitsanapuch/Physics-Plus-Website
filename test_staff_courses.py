@@ -7,7 +7,8 @@ import unittest
 
 from backend import (PhysicsPlusApp, BRAND_CODES_MIGRATION, COURSE_CATALOG, SCHEMA,
                      migrate_academic_schema, migrate_brand_codes,
-                     migrate_nullable_course_teachers, seed_initial_courses)
+                     migrate_nullable_course_teachers, seed_initial_courses,
+                     seed_individual_courses)
 
 
 class StaffCourseTests(unittest.TestCase):
@@ -29,27 +30,78 @@ class StaffCourseTests(unittest.TestCase):
 
     def test_initial_catalog_is_live_unassigned_and_admin_prices_survive_reinitialization(self):
         listed = self.request("GET", "/api/courses").body["courses"]
-        self.assertEqual(len(listed), 8)
+        self.assertEqual(len(listed), 16)
         self.assertEqual({(row["level"], row["subject"]) for row in listed}, set(COURSE_CATALOG))
         self.assertTrue(all(row["teacher_name"] is None for row in listed))
+        groups = [row for row in listed if row["course_format"] == "group"]
+        individuals = [row for row in listed if row["course_format"] == "individual"]
+        self.assertEqual(len(groups), len(COURSE_CATALOG))
+        self.assertEqual(len(individuals), len(COURSE_CATALOG))
+        self.assertEqual({(row["level"], row["subject"]) for row in individuals}, set(COURSE_CATALOG))
         self.assertTrue(all(row["price_satang"] == (350_000 if row["level"] == "middle" else 450_000)
-                            for row in listed))
-        target = next(row for row in listed if row["subject"] == "physics")
+                            for row in groups))
+        self.assertTrue(all(row["price_satang"] == 30_000 for row in individuals))
+        self.assertTrue(all("-ONE-" in row["course_code"] for row in individuals))
+        self.assertEqual(len({row["course_code"] for row in listed}), len(listed))
+        target = next(row for row in groups if row["subject"] == "physics")
         updated = self.request("PUT", f"/api/admin/courses/{target['id']}",
                                {"price_satang": 475_000})
         self.assertEqual(updated.status, 200, updated.body)
         with self.owner.connect() as conn:
             seed_initial_courses(conn)
+            seed_individual_courses(conn)
         self.owner._init_db()
         updated_list = self.request("GET", "/api/courses").body["courses"]
-        self.assertEqual(len(updated_list), 8)
+        self.assertEqual(len(updated_list), 16)
         self.assertEqual(next(row for row in updated_list if row["id"] == target["id"])["price_satang"], 475_000)
-        academic = self.request("GET", "/api/admin/academic").body["courses"]
-        self.assertEqual(len(academic), 8)
+        admin_data = self.request("GET", "/api/admin/academic").body
+        academic = admin_data["courses"]
+        self.assertEqual(len(academic), 16)
+        self.assertEqual(admin_data["rooms"], ["ห้องใหญ่", "ห้องเล็กด้านหน้า", "ห้องเล็กด้านหลัง", "ห้องเล็กหลังห้องใหญ่"])
         self.assertTrue(all(row["teacher_id"] is None for row in academic))
         report = self.request("GET", "/api/admin/reports/courses").body["rows"]
-        self.assertEqual(len(report), 8)
+        self.assertEqual(len(report), 16)
         self.assertTrue(all(row["teacher_name"] is None for row in report))
+
+    def test_individual_seed_preserves_existing_owner_course_and_marks_sheet_dirty(self):
+        conn = sqlite3.connect(":memory:", isolation_level=None)
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+        conn.execute("PRAGMA foreign_keys=ON")
+        seed_initial_courses(conn)
+        conn.execute(
+            "INSERT INTO courses(id,course_code,subject_code,title,subject,level,price_satang,"
+            "teacher_id,capacity,created_at) VALUES(?,?,?,?,?,?,?,NULL,?,?)",
+            ("custom-individual", "PP-H-PHY-ONE-000042", "H-PHY", "ฟิสิกส์ ม.ปลาย · ตัวต่อตัว",
+             "physics", "high", 30_000, 7, 1),
+        )
+        conn.execute("INSERT INTO course_formats(course_id,format) VALUES(?,'individual')",
+                     ("custom-individual",))
+        conn.execute(
+            "INSERT INTO courses(id,course_code,subject_code,title,subject,level,price_satang,"
+            "teacher_id,capacity,active,created_at) VALUES(?,?,?,?,?,?,?,NULL,?,0,?)",
+            ("archived-individual", "PP-H-CHE-ONE-000042", "H-CHE", "เคมี ม.ปลาย · ตัวต่อตัว",
+             "chemistry", "high", 30_000, 5, 1),
+        )
+        conn.execute("INSERT INTO course_formats(course_id,format) VALUES(?,'individual')",
+                     ("archived-individual",))
+        conn.execute(
+            "INSERT INTO sheet_sync_state(dataset,revision,synced_revision,updated_at) "
+            "VALUES('courses',4,4,1)",
+        )
+        seed_individual_courses(conn)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM course_formats").fetchone()[0], 9)
+        self.assertEqual(conn.execute(
+            "SELECT COUNT(*) FROM courses c JOIN course_formats f ON f.course_id=c.id "
+            "WHERE c.active=1"
+        ).fetchone()[0], 8)
+        self.assertEqual(conn.execute("SELECT capacity FROM courses WHERE id='custom-individual'").fetchone()[0], 7)
+        self.assertEqual(conn.execute("SELECT active FROM courses WHERE id='archived-individual'").fetchone()[0], 0)
+        self.assertEqual(conn.execute("SELECT revision,synced_revision FROM sheet_sync_state WHERE dataset='courses'").fetchone()[:], (5, 4))
+        seed_individual_courses(conn)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM course_formats").fetchone()[0], 9)
+        self.assertEqual(conn.execute("SELECT revision FROM sheet_sync_state WHERE dataset='courses'").fetchone()[0], 5)
 
     def test_existing_course_rebuild_keeps_child_records_and_foreign_keys(self):
         legacy_schema = SCHEMA.replace("teacher_id TEXT REFERENCES users(id),\n  capacity",
