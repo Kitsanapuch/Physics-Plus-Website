@@ -9,7 +9,7 @@ dependencies = [
   "tzdata>=2025.2",
   "reportlab>=4.4,<5",
   "google-auth[requests]>=2.35,<3",
-  "vercel-queue==0.9.2",
+  "vercel-queue[typed]==0.9.2",
 ]
 
 [tool.uv]
