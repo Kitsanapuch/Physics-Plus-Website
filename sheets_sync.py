@@ -30,7 +30,7 @@ REPORT_HEADERS = {
     "invoices": ("id", "invoice_number", "student_name", "student_email", "description", "amount_satang", "individual_period", "individual_minutes", "status", "due_date", "created_at"),
     "payments": ("id", "invoice_number", "amount_satang", "method", "reference", "recorded_at"),
     "receipts": ("id", "receipt_number", "invoice_number", "student_name", "enrollment_id", "course_code", "course_title", "description", "amount_satang", "method", "reference", "paid_at", "issued_at"),
-    "claims": ("id", "invoice_number", "student_name", "amount_satang", "reference", "status", "created_at", "reviewed_at"),
+    "claims": ("id", "invoice_number", "student_name", "amount_satang", "reference", "status", "created_at", "reviewed_at", "verification_status", "verification_note", "verification_reviewed_at", "verification_reviewer_name"),
     "teaching": ("id", "teacher_name", "course_title", "actual_start", "actual_end", "break_minutes", "payable_minutes", "student_count", "rate_satang_per_hour", "amount_satang", "status", "submitted_at", "reviewed_at"),
     "payroll": ("id", "teacher_name", "period", "status", "total_satang", "finalized_at", "paid_at", "payment_reference", "created_at"),
     "rates": ("id", "teacher_label", "subject", "level", "min_students", "max_students", "rate_satang_per_hour", "effective_from", "effective_to", "state", "source_note"),
