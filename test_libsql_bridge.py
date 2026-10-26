@@ -15,6 +15,7 @@ import libsql
 import app as site
 import manage
 import remote
+from sheets_sync import dispatch
 
 
 class MarketplaceLibsqlTests(unittest.TestCase):
@@ -57,6 +58,13 @@ class MarketplaceLibsqlTests(unittest.TestCase):
             self.assertEqual([item["username"] for item in conn.execute(
                 "SELECT username FROM users WHERE role='admin'"
             )], ["physicsplus"])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM courses c JOIN course_formats f ON f.course_id=c.id "
+                "WHERE f.format='individual'"
+            ).fetchone()[0], 8)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM courses WHERE active=1"
+            ).fetchone()[0], 16)
 
         with self.assertRaises(RuntimeError):
             with self.owner.connect() as conn:
@@ -69,6 +77,22 @@ class MarketplaceLibsqlTests(unittest.TestCase):
             self.assertIsNone(conn.execute(
                 "SELECT key_hash FROM login_throttle WHERE key_hash='rollback'"
             ).fetchone())
+
+    def test_sheet_delivery_reuses_one_native_connection(self) -> None:
+        class Recorder:
+            def __init__(self):
+                self.snapshots = None
+
+            def write(self, snapshots):
+                self.snapshots = snapshots
+
+        writer = Recorder()
+        with patch.object(self.owner, "connect", wraps=self.owner.connect) as connect:
+            result = dispatch(self.owner, client=writer)
+        self.assertEqual(connect.call_count, 1)
+        self.assertGreater(result["synced"], 0)
+        self.assertEqual(result["processed"], result["synced"])
+        self.assertIn("courses", writer.snapshots)
 
     def test_constraint_errors_and_script_errors_are_not_hidden(self) -> None:
         with self.owner.connect() as conn:
@@ -110,6 +134,31 @@ class MarketplaceLibsqlTests(unittest.TestCase):
             self.assertEqual(student.get(
                 "/api/me", base_url="https://school.example"
             ).json["user"]["role"], "student")
+
+    def test_native_libsql_installs_session_cleanup_on_cold_worker(self) -> None:
+        self.owner.bootstrap_admin(None, "Admin", "SafeTestPassword123!", "physicsplus")
+        with self.owner.connect() as conn:
+            conn.execute("DROP TRIGGER sessions_cleanup_expired")
+        cold = remote.RemotePhysicsPlusApp(
+            "libsql://test.example", "synthetic-test-token", "https://school.example"
+        )
+        with cold.connect() as conn:
+            self.assertIsNotNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sessions_cleanup_expired'"
+            ).fetchone())
+            admin_id = conn.execute("SELECT id FROM users WHERE role='admin'").fetchone()[0]
+            conn.execute("INSERT INTO sessions VALUES(?,?,?,?,?)",
+                         ("expired-native-token", admin_id, "expired-csrf", 1, 2))
+        login = cold.handle(
+            "POST", "/api/auth/login",
+            {"login": "physicsplus", "password": "SafeTestPassword123!"},
+            {"host": "school.example", "origin": "https://school.example"}, "192.0.2.1"
+        )
+        self.assertEqual(login.status, 200, login.body)
+        with cold.connect() as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sessions WHERE token_hash='expired-native-token'"
+            ).fetchone())
 
     def test_readiness_requires_active_admin_and_exact_rate_grid(self) -> None:
         self.owner.bootstrap_admin(None, "Admin", "SafeTestPassword123!", "physicsplus")

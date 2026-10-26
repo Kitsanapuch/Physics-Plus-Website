@@ -7,6 +7,7 @@ Vercel deployment. Run with `python3 -m unittest test_package.py`.
 from __future__ import annotations
 
 import sqlite3
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,11 @@ from unittest.mock import patch
 import app as site
 import remote
 from backend import ApiError, hash_password, uid
+
+
+TEST_SLIP = base64.b64encode(base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)).decode("ascii")
 
 
 class DeploymentPackageTests(unittest.TestCase):
@@ -176,10 +182,11 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertEqual(student.get("/api/student/dashboard", base_url=self.base_url).json["invoices"][0]["amount_satang"], 175000)
         altered = student.post("/api/student/payment-claims", base_url=self.base_url, headers=student_headers,
                                json={"invoice_id": invoice.json["invoice_id"], "amount_satang": 1,
-                                     "reference": "TEST-REF"})
+                                     "slip_mime": "image/png", "slip_base64": TEST_SLIP})
         self.assertEqual(altered.status_code, 400, altered.json)
         claim = student.post("/api/student/payment-claims", base_url=self.base_url, headers=student_headers,
-                             json={"invoice_id": invoice.json["invoice_id"], "reference": "TEST-REF"})
+                             json={"invoice_id": invoice.json["invoice_id"],
+                                   "slip_mime": "image/png", "slip_base64": TEST_SLIP})
         self.assertEqual(claim.status_code, 201, claim.json)
         self.assertEqual(claim.json["amount_satang"], 175000)
         alerts_url = "/api/admin/payment-alerts"
@@ -247,7 +254,8 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertIn("no-store", document.headers["Cache-Control"])
         claim = student.post("/api/student/payment-claims", base_url=self.base_url,
                              headers=student_headers,
-                             json={"invoice_id": invoice_id, "reference": "RECEIPT-REF-2"})
+                             json={"invoice_id": invoice_id,
+                                   "slip_mime": "image/png", "slip_base64": TEST_SLIP})
         self.assertEqual(claim.status_code, 201, claim.json)
         self.assertEqual(claim.json["amount_satang"], 300_000)
         self.assertEqual(len(student.get("/api/student/dashboard", base_url=self.base_url).json["receipts"]), 1)
@@ -290,7 +298,11 @@ class DeploymentPackageTests(unittest.TestCase):
         self.owner.bootstrap_admin(None, "Admin", "SafeTestPassword123!", "physicsplus")
         with self.owner.connect() as conn:
             admin_id = conn.execute("SELECT id FROM users WHERE role='admin'").fetchone()[0]
-            course = conn.execute("SELECT id,course_code,title FROM courses WHERE subject='physics'").fetchone()
+            course = conn.execute(
+                "SELECT c.id,c.course_code,c.title FROM courses c "
+                "LEFT JOIN course_formats f ON f.course_id=c.id "
+                "WHERE c.subject='physics' AND f.course_id IS NULL LIMIT 1"
+            ).fetchone()
             student_id, enrollment_id, invoice_id, payment_id = (uid() for _ in range(4))
             conn.execute("INSERT INTO users(id,email,name,password_hash,role,created_at) VALUES(?,?,?,?,?,?)",
                          (student_id, "old-student@example.com", "Old Student",

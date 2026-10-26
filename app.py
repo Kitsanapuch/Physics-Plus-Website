@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import base64
 import json
 import os
 import hmac
@@ -15,7 +16,8 @@ from flask import Flask, make_response, redirect, request, send_from_directory
 from turso_serverless import DatabaseError
 from turso_serverless.protocol import ProtocolError
 
-from backend import MAX_BODY, Response, SHEET_DATASETS
+from backend import MAX_BODY, MAX_SLIP_REQUEST, Response, SHEET_DATASETS
+from delivery_queue import publish_delivery_signal
 from mailer import delivery_configured, send_update_email
 from remote import RemotePhysicsPlusApp
 from sheets_sync import dispatch as dispatch_sheet_sync, sheet_configured
@@ -24,7 +26,7 @@ from sheets_sync import dispatch as dispatch_sheet_sync, sheet_configured
 PUBLIC_DIR = Path(__file__).resolve().parent / "public"
 PRIVATE_DIR = Path(__file__).resolve().parent / "private"
 app = Flask(__name__, static_folder=None)
-app.config["MAX_CONTENT_LENGTH"] = MAX_BODY
+app.config["MAX_CONTENT_LENGTH"] = MAX_SLIP_REQUEST
 
 
 def _exact_origin(value: str, *, allow_local_http: bool = False) -> str:
@@ -180,13 +182,43 @@ def receipt_download(receipt_id: str):
     return response
 
 
+@app.get("/api/admin/payment-claims/<claim_id>/slip")
+def payment_slip_download(claim_id: str):
+    if not re.fullmatch(r"[0-9a-f]{32}", claim_id):
+        return _error(404, "slip_not_found", "Payment slip not found")
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    try:
+        result = _backend().handle("GET", f"/api/admin/payment-claims/{claim_id}/slip", None, headers, _client_ip())
+    except (DatabaseError, ProtocolError, RuntimeError, ValueError):
+        return _error(503, "slip_unavailable", "The payment slip is temporarily unavailable")
+    if result.status != 200:
+        return _json_response(result)
+    document = base64.b64decode(result.body["slip_base64"])
+    response = make_response(document)
+    response.headers["Content-Type"] = result.body["mime_type"]
+    extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}[result.body["mime_type"]]
+    response.headers["Content-Disposition"] = f'attachment; filename="physics-plus-slip-{claim_id}.{extension}"'
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Vary"] = "Cookie"
+    return response
+
+
 @app.route("/api/<path:api_path>", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 def api(api_path: str):
     if request.method in {"POST", "PUT"}:
+        request_limit = MAX_SLIP_REQUEST if request.path == "/api/student/payment-claims" else MAX_BODY
+        if request.content_length is not None and request.content_length > request_limit:
+            return _error(413, "body_too_large", "Request body exceeds the size limit")
         if not request.is_json:
             return _error(415, "unsupported_media_type", "Send application/json")
         try:
-            payload = json.loads(request.get_data(cache=False))
+            raw_body = request.get_data(cache=False)
+            if len(raw_body) > request_limit:
+                return _error(413, "body_too_large", "Request body exceeds the size limit")
+            payload = json.loads(raw_body)
         except (json.JSONDecodeError, UnicodeDecodeError):
             return _error(400, "invalid_json", "Invalid JSON")
         if not isinstance(payload, dict):
@@ -205,23 +237,32 @@ def api(api_path: str):
     if request.method in {"POST", "PUT"} and 200 <= result.status < 300 and target not in {
         "/api/auth/login", "/api/auth/logout"
     }:
-        # The response is based on the already committed business update.
-        # Provider or outbox failure must not turn a successful update into 500.
+        # Every business change has already committed its sheet revision and
+        # notification outbox rows. Vercel Queues wakes a separate worker so a
+        # slow Google or mail provider cannot delay the successful response.
+        # Local runs and queue outages retain the original synchronous path.
         sheet_batch = {"processed": 0, "synced": 0, "retrying": 0}
-        try:
-            sheet_batch = _dispatch_sheets(limit=len(SHEET_DATASETS)) or sheet_batch
-        except Exception:
-            pass
-        if target == "/api/admin/sheet-sync/retry":
-            # The admin retry button reports the attempted delivery, rather
-            # than merely saying that another retry was queued.
+        retry_requested = target == "/api/admin/sheet-sync/retry"
+        queued = False
+        if not retry_requested:
+            try:
+                queued = publish_delivery_signal()
+            except Exception:
+                queued = False
+        if retry_requested or not queued:
+            try:
+                sheet_batch = _dispatch_sheets(limit=len(SHEET_DATASETS)) or sheet_batch
+            except Exception:
+                pass
+        if retry_requested:
+            # The explicit admin retry reports the attempted delivery result.
             try:
                 with _backend().connect() as conn:
                     result.body.update(_backend()._sheet_sync_status(conn))
             except Exception:
                 pass
             result.body.update(sheet_batch)
-        if target != "/api/admin/sheet-sync/retry":
+        elif not queued:
             try:
                 _dispatch_notifications(limit=2)
             except Exception:
@@ -274,7 +315,7 @@ def public_asset(asset: str):
         response.headers["X-Frame-Options"] = "DENY"
         return response
     if asset not in {
-        "index.html", "live.js", "live.css", "portal.css",
+        "index.html", "robots.txt", "sitemap.xml", "live.js", "live.css", "portal.css",
         "design.css", "physics-hero-gold.png", "physics-plus-logo-yellow-black.png",
         "physics-hero-gold.jpg", "physics-plus-logo-yellow-black.jpg", "physics-plus-favicon.png",
     }:

@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import base64
 from pathlib import Path
 
 from backend import PhysicsPlusApp
+
+
+TEST_SLIP = base64.b64encode(base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
+)).decode("ascii")
 
 
 class PaymentAlertTests(unittest.TestCase):
@@ -63,9 +69,14 @@ class PaymentAlertTests(unittest.TestCase):
         }, cookie=self.admin_cookie, csrf=self.admin_csrf)
         self.assertEqual(invoice.status, 201, invoice.body)
         claim = self.call("POST", "/api/student/payment-claims", {
-            "invoice_id": invoice.body["invoice_id"], "reference": "TEST-TRANSFER-1",
+            "invoice_id": invoice.body["invoice_id"],
+            "slip_mime": "image/png", "slip_base64": TEST_SLIP,
         }, cookie=self.student_cookie, csrf=self.student_csrf)
         self.assertEqual(claim.status, 201, claim.body)
+        slip_path = f"/api/admin/payment-claims/{claim.body['claim_id']}/slip"
+        self.assertEqual(self.call("GET", slip_path).status, 401)
+        self.assertEqual(self.call("GET", slip_path, cookie=self.student_cookie).status, 403)
+        self.assertEqual(self.call("GET", slip_path, cookie=self.admin_cookie).body["slip_base64"], TEST_SLIP)
 
         alerts = self.call("GET", alert_path, cookie=self.admin_cookie)
         self.assertEqual(alerts.status, 200, alerts.body)
