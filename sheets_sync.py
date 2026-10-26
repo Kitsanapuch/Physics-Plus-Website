@@ -23,20 +23,22 @@ if TYPE_CHECKING:
 REPORT_HEADERS = {
     "students": ("student_code", "name", "email", "status", "grade", "school", "guardian_name", "guardian_phone", "guardian_relationship", "created_at", "internal_id"),
     "teachers": ("id", "teacher_code", "name", "email", "status", "created_at"),
-    "courses": ("course_code", "subject_code", "title", "subject", "level", "price_satang", "capacity", "active", "teacher_name", "teacher_code", "created_at", "internal_id"),
+    "courses": ("course_code", "subject_code", "title", "subject", "level", "course_format", "target_sessions", "price_satang", "capacity", "active", "teacher_name", "teacher_code", "created_at", "internal_id"),
     "classes": ("id", "room_name", "starts_at", "ends_at", "status", "course_code", "subject_code", "course_title", "teacher_code", "teacher_name", "roster_count", "created_at", "cancellation_reason", "cancelled_at"),
     "class_rosters": ("class_id", "room_name", "course_code", "course_title", "student_code", "student_name", "attendance_status", "starts_at", "ends_at"),
     "enrollments": ("id", "course_code", "course_title", "student_code", "student_name", "student_email", "status", "created_at"),
-    "invoices": ("id", "invoice_number", "student_name", "student_email", "description", "amount_satang", "status", "due_date", "created_at"),
+    "invoices": ("id", "invoice_number", "student_name", "student_email", "description", "amount_satang", "individual_period", "individual_minutes", "status", "due_date", "created_at"),
     "payments": ("id", "invoice_number", "amount_satang", "method", "reference", "recorded_at"),
     "receipts": ("id", "receipt_number", "invoice_number", "student_name", "enrollment_id", "course_code", "course_title", "description", "amount_satang", "method", "reference", "paid_at", "issued_at"),
-    "claims": ("id", "invoice_number", "student_name", "amount_satang", "reference", "status", "created_at", "reviewed_at"),
+    "claims": ("id", "invoice_number", "student_name", "amount_satang", "reference", "status", "created_at", "reviewed_at", "verification_status", "verification_note", "verification_reviewed_at", "verification_reviewer_name"),
     "teaching": ("id", "teacher_name", "course_title", "actual_start", "actual_end", "break_minutes", "payable_minutes", "student_count", "rate_satang_per_hour", "amount_satang", "status", "submitted_at", "reviewed_at"),
     "payroll": ("id", "teacher_name", "period", "status", "total_satang", "finalized_at", "paid_at", "payment_reference", "created_at"),
     "rates": ("id", "teacher_label", "subject", "level", "min_students", "max_students", "rate_satang_per_hour", "effective_from", "effective_to", "state", "source_note"),
     "payroll_monthly": ("period", "is_current_month", "teacher_code", "teacher_name", "submitted_count", "rejected_count", "approved_count", "approved_minutes", "approved_unrun_satang", "draft_payroll_satang", "finalized_payroll_satang", "paid_satang", "total_wages_due_satang", "generated_at"),
     "payroll_summary": ("เดือน", "รายการ", "รหัสครู", "ครูผู้สอน", "รอตรวจ (คาบ)", "ปฏิเสธ (คาบ)", "อนุมัติ (คาบ)", "ชั่วโมงอนุมัติ", "ยังไม่เข้ารอบ (บาท)", "ร่างงวด (บาท)", "รอโอน (บาท)", "จ่ายแล้ว (บาท)", "ค้างจ่าย (บาท)"),
     "payment_account": ("bank_code", "bank_name", "account_name", "account_number", "updated_at"),
+    "teacher_availability": ("id", "teacher_code", "teacher_name", "starts_at", "ends_at", "active", "created_at"),
+    "assignments": ("id", "assignee_code", "assignee_name", "assignee_role", "course_code", "course_title", "title", "description", "due_date", "status", "created_at", "updated_at", "completed_at"),
 }
 assert tuple(REPORT_HEADERS) == SHEET_DATASETS
 TAB_TITLES = {dataset: "DB_" + dataset for dataset in SHEET_DATASETS}
@@ -47,7 +49,7 @@ TAB_TITLES["payroll_summary"] = "DB_สรุปค่าจ้างครู"
 # unformatted values so that leading zeroes and identifiers remain intact.
 COMMA_INTEGER_HEADERS = {
     "price_satang", "capacity", "roster_count", "amount_satang",
-    "break_minutes", "payable_minutes", "student_count",
+    "break_minutes", "payable_minutes", "individual_minutes", "student_count",
     "rate_satang_per_hour", "total_satang", "min_students", "max_students",
     "submitted_count", "rejected_count", "approved_count", "approved_minutes",
     "approved_unrun_satang", "draft_payroll_satang",
@@ -150,16 +152,12 @@ def _monthly_rows(conn) -> list[dict]:
     return output
 
 
-def snapshot(owner: PhysicsPlusApp, conn, dataset: str) -> list[dict]:
-    if dataset == "payroll_monthly":
-        return _monthly_rows(conn)
-    if dataset == "payroll_summary":
-        monthly = _monthly_rows(conn)
-        monthly.sort(key=lambda row: (
+def _summary_rows(monthly: list[dict]) -> list[dict]:
+    monthly = sorted(monthly, key=lambda row: (
             not row["is_current_month"], -int(row["period"].replace("-", "")),
             row["teacher_name"],
         ))
-        return [{
+    return [{
             "เดือน": row["period"],
             "รายการ": "เดือนปัจจุบัน" if row["is_current_month"] else "ย้อนหลัง",
             "รหัสครู": row["teacher_code"],
@@ -174,6 +172,13 @@ def snapshot(owner: PhysicsPlusApp, conn, dataset: str) -> list[dict]:
             "จ่ายแล้ว (บาท)": row["paid_satang"] / 100,
             "ค้างจ่าย (บาท)": row["total_wages_due_satang"] / 100,
         } for row in monthly]
+
+
+def snapshot(owner: PhysicsPlusApp, conn, dataset: str) -> list[dict]:
+    if dataset == "payroll_monthly":
+        return _monthly_rows(conn)
+    if dataset == "payroll_summary":
+        return _summary_rows(_monthly_rows(conn))
     if dataset == "payment_account":
         row = conn.execute(
             "SELECT bank_code,bank_name,account_name,account_number,updated_at "
@@ -290,7 +295,7 @@ class GoogleSheetsClient:
             requests.append({"repeatCell": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0,
                           "endRowIndex": row_count, "startColumnIndex": 0,
-                          "endColumnIndex": needed_columns},
+                          "endColumnIndex": max(column_count, needed_columns)},
                 "cell": {}, "fields": "userEnteredValue",
             }})
             requests.append({"updateCells": {
@@ -338,35 +343,43 @@ def dispatch(owner: PhysicsPlusApp, *, limit: int = 20, client=None) -> dict[str
     lease_token = uid()
     with owner.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        # One atomic UPDATE leases the selected rows and returns their exact
+        # revisions. This avoids one remote round trip for every dirty tab.
         dirty = conn.execute(
-            "SELECT dataset,revision,attempts FROM sheet_sync_state "
+            "UPDATE sheet_sync_state SET lease_token=?,lease_until=?,attempts=attempts+1 "
+            "WHERE dataset IN ("
+            "SELECT dataset FROM sheet_sync_state "
             "WHERE revision>synced_revision AND next_attempt_at<=? "
             "AND (lease_until IS NULL OR lease_until<=?) "
-            "ORDER BY updated_at,dataset LIMIT ?",
-            (current, current, limit),
+            "ORDER BY updated_at,dataset LIMIT ?) "
+            "RETURNING dataset,revision,attempts",
+            (lease_token, current + 120, current, current, limit),
         ).fetchall()
-        for row in dirty:
-            conn.execute(
-                "UPDATE sheet_sync_state SET lease_token=?,lease_until=?,attempts=attempts+1 "
-                "WHERE dataset=?",
-                (lease_token, current + 120, row["dataset"]),
-            )
         conn.commit()
-    if not dirty:
-        return result
-    result["processed"] = len(dirty)
-    try:
-        with owner.connect() as conn:
-            snapshots = {row["dataset"]: snapshot(owner, conn, row["dataset"])
-                         for row in dirty}
-        writer = client or GoogleSheetsClient()
-        writer.write(snapshots)
-    except Exception as exc:
-        code = exc.code if isinstance(exc, SheetSyncError) else "sync_exception"
-        with owner.connect() as conn:
+        if not dirty:
+            return result
+        result["processed"] = len(dirty)
+        try:
+            # No transaction remains open while Google is called. Reusing this
+            # connection saves repeated remote handshakes without changing the
+            # lease, revision or retry guarantees.
+            snapshots = {}
+            monthly = None
+            for row in dirty:
+                dataset = row["dataset"]
+                if dataset in {"payroll_monthly", "payroll_summary"}:
+                    if monthly is None:
+                        monthly = _monthly_rows(conn)
+                    snapshots[dataset] = monthly if dataset == "payroll_monthly" else _summary_rows(monthly)
+                else:
+                    snapshots[dataset] = snapshot(owner, conn, dataset)
+            writer = client or GoogleSheetsClient()
+            writer.write(snapshots)
+        except Exception as exc:
+            code = exc.code if isinstance(exc, SheetSyncError) else "sync_exception"
             conn.execute("BEGIN IMMEDIATE")
             for row in dirty:
-                delay = min(3600, 30 * (2 ** min(row["attempts"], 7)))
+                delay = min(3600, 30 * (2 ** min(row["attempts"] - 1, 7)))
                 conn.execute(
                     "UPDATE sheet_sync_state SET lease_token=NULL,lease_until=NULL,"
                     "next_attempt_at=?,last_error_code=? "
@@ -374,10 +387,9 @@ def dispatch(owner: PhysicsPlusApp, *, limit: int = 20, client=None) -> dict[str
                     (now() + delay, code, row["dataset"], lease_token),
                 )
             conn.commit()
-        result["retrying"] = len(dirty)
-        return result
+            result["retrying"] = len(dirty)
+            return result
 
-    with owner.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         for row in dirty:
             updated = conn.execute(

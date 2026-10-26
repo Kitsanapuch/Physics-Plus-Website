@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -18,7 +19,8 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
+import zlib
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
@@ -30,6 +32,10 @@ from zoneinfo import ZoneInfo
 BANGKOK = ZoneInfo("Asia/Bangkok")
 SESSION_SECONDS = 7 * 24 * 3600
 MAX_BODY = 64 * 1024
+MAX_SLIP_BYTES = 850 * 1024
+MAX_SLIP_REQUEST = 1_200_000
+MAX_QR_IMAGE_PIXELS = 20_000_000
+MAX_QR_PAYLOAD_CHARS = 20_000
 EMAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+\Z", re.ASCII)
 EMAIL_DOMAIN_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -51,18 +57,22 @@ TEACHER_ROSTER_MIGRATION = "teacher_roster_2026_10_21"
 BRAND_CODES_MIGRATION = "physics_plus_codes_2026_10_21"
 STUDENT_CODE_MIGRATION = "student_codes_yy_nnn_2026_10_24"
 COURSE_SEED_MIGRATION = "physics_plus_initial_courses_2026_10_21"
+INDIVIDUAL_COURSE_SEED_MIGRATION = "physics_plus_individual_courses_2026_10_26"
 INITIAL_TEACHERS = ("ครูตุ้ม", "ครูโรจน์", "ครูโจ้")
 INITIAL_COURSE_CAPACITY = 13
+INDIVIDUAL_TUITION_SATANG_PER_HOUR = 30_000
+ROOM_NAMES = ("ห้องใหญ่", "ห้องเล็กด้านหน้า", "ห้องเล็กด้านหลัง", "ห้องเล็กหลังห้องใหญ่")
 DEFAULT_PAYMENT_ACCOUNT = ("ttb", "ทีเอ็มบีธนชาต", "ชดาภัษท สุดศิริ", "585-2-22394-9")
 SHEET_DATASETS = (
     "students", "teachers", "courses", "classes", "class_rosters",
     "enrollments", "invoices", "payments", "receipts", "claims",
     "teaching", "payroll", "rates", "payroll_monthly", "payroll_summary", "payment_account",
+    "teacher_availability", "assignments",
 )
 SHEET_EVENT_DATASETS = {
-    "user": ("students", "teachers", "courses", "enrollments", "invoices", "receipts", "claims", "classes", "class_rosters", "teaching", "payroll", "payroll_monthly", "payroll_summary"),
+    "user": ("students", "teachers", "courses", "enrollments", "invoices", "receipts", "claims", "classes", "class_rosters", "teaching", "payroll", "payroll_monthly", "payroll_summary", "teacher_availability", "assignments"),
     "student_profile": ("students",),
-    "course": ("courses", "classes", "class_rosters", "enrollments", "teaching"),
+    "course": ("courses", "classes", "class_rosters", "enrollments", "teaching", "assignments"),
     "enrollment": ("students", "enrollments", "class_rosters"),
     "class_session": ("classes", "class_rosters", "teaching", "payroll_monthly", "payroll_summary"),
     "attendance": ("class_rosters",),
@@ -75,6 +85,8 @@ SHEET_EVENT_DATASETS = {
     "payroll_run": ("payroll", "teaching", "payroll_monthly", "payroll_summary"),
     "payroll_adjustment": ("payroll", "payroll_monthly", "payroll_summary"),
     "payment_account": ("payment_account",),
+    "teacher_availability": ("teacher_availability",),
+    "assignment": ("assignments",),
 }
 
 
@@ -91,6 +103,167 @@ def is_pending_teacher(row: sqlite3.Row | dict) -> bool:
 
 def public_email(row: sqlite3.Row | dict) -> str | None:
     return None if is_pending_teacher(row) else row["email"]
+
+
+def valid_payment_image(content: bytes, mime_type: str) -> bool:
+    """Reject truncated, mislabelled, or implausibly large payment images."""
+    if mime_type == "image/png":
+        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
+            return False
+        offset = 8
+        first = True
+        while offset + 12 <= len(content):
+            length = int.from_bytes(content[offset:offset + 4], "big")
+            end = offset + 12 + length
+            if end > len(content):
+                return False
+            kind = content[offset + 4:offset + 8]
+            data = content[offset + 8:offset + 8 + length]
+            expected_crc = int.from_bytes(content[end - 4:end], "big")
+            if zlib.crc32(kind + data) != expected_crc:
+                return False
+            if first:
+                if kind != b"IHDR" or length != 13:
+                    return False
+                width = int.from_bytes(data[:4], "big")
+                height = int.from_bytes(data[4:8], "big")
+                if not (0 < width <= 10000 and 0 < height <= 10000):
+                    return False
+                first = False
+            if kind == b"IEND":
+                return length == 0 and end == len(content)
+            offset = end
+        return False
+    if mime_type == "image/jpeg":
+        if not (content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9")):
+            return False
+        offset = 2
+        has_frame = False
+        while offset + 4 <= len(content):
+            if content[offset] != 0xff:
+                return False
+            while offset < len(content) and content[offset] == 0xff:
+                offset += 1
+            if offset + 2 >= len(content):
+                return False
+            marker = content[offset]
+            offset += 1
+            if marker == 0xda:
+                return has_frame and len(content) - offset > 4
+            if marker in (0x01, *range(0xd0, 0xd9)):
+                continue
+            segment_size = int.from_bytes(content[offset:offset + 2], "big")
+            if segment_size < 2 or offset + segment_size > len(content):
+                return False
+            if marker in {0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf}:
+                if segment_size < 7:
+                    return False
+                height = int.from_bytes(content[offset + 3:offset + 5], "big")
+                width = int.from_bytes(content[offset + 5:offset + 7], "big")
+                has_frame = 0 < width <= 10000 and 0 < height <= 10000
+            offset += segment_size
+        return False
+    if mime_type == "image/webp":
+        if len(content) < 30 or content[:4] != b"RIFF" or content[8:12] != b"WEBP":
+            return False
+        if int.from_bytes(content[4:8], "little") + 8 != len(content):
+            return False
+        kind = content[12:16]
+        size = int.from_bytes(content[16:20], "little")
+        if kind not in {b"VP8 ", b"VP8L", b"VP8X"} or size < 10 or 20 + size > len(content):
+            return False
+        if kind == b"VP8X":
+            width = int.from_bytes(content[24:27], "little") + 1
+            height = int.from_bytes(content[27:30], "little") + 1
+            return 0 < width <= 10000 and 0 < height <= 10000
+        return True
+    return False
+
+
+def _emv_qr_checksum_valid(payload: str) -> bool:
+    """Validate TLV framing and CRC only; it does not validate a bank transfer."""
+    try:
+        raw = payload.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    cursor = 0
+    seen: set[bytes] = set()
+    while cursor < len(raw):
+        if cursor + 4 > len(raw) or not raw[cursor:cursor + 4].isdigit():
+            return False
+        tag = raw[cursor:cursor + 2]
+        length = int(raw[cursor + 2:cursor + 4])
+        if tag in seen or cursor + 4 + length > len(raw):
+            return False
+        seen.add(tag)
+        cursor += 4 + length
+    if cursor != len(raw) or raw[-8:-4] != b"6304":
+        return False
+    crc = 0xFFFF
+    for value in raw[:-4]:
+        crc ^= value << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return f"{crc:04X}".encode("ascii") == raw[-4:].upper()
+
+
+def inspect_slip_qr(content: bytes) -> dict:
+    """Decode a QR locally without opening its URL or contacting a bank."""
+    unavailable = {"status": "unavailable", "payload_type": None, "checksum_valid": None,
+                   "payload_fingerprint": None,
+                   "message": "ระบบอ่าน QR ยังไม่พร้อม โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    try:
+        from PIL import Image, UnidentifiedImageError
+        import zxingcpp
+    except ImportError:
+        return unavailable
+    try:
+        with Image.open(io.BytesIO(content)) as source:
+            if source.width * source.height > MAX_QR_IMAGE_PIXELS:
+                return {**unavailable, "status": "unreadable",
+                        "message": "ภาพมีความละเอียดสูงเกินสำหรับอ่าน QR โปรดตรวจด้วยตนเอง"}
+            source.thumbnail((2048, 2048))
+            image = source.convert("RGB")
+        symbols = zxingcpp.read_barcodes(image, formats=zxingcpp.BarcodeFormat.QRCode)
+    except (UnidentifiedImageError, OSError, ValueError, RuntimeError):
+        return {**unavailable, "status": "unreadable",
+                "message": "อ่าน QR จากภาพนี้ไม่ได้ โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    except Exception:
+        # Native image decoders can reject malformed input unexpectedly. Keep
+        # the payment claim reviewable without treating a decode error as proof
+        # that the transfer failed.
+        return {**unavailable, "status": "unreadable",
+                "message": "อ่าน QR จากภาพนี้ไม่ได้ โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    if not symbols:
+        return {**unavailable, "status": "not_found",
+                "message": "ไม่พบ QR ที่อ่านได้ในภาพ โปรดตรวจสลิปด้วยตนเอง"}
+    if len(symbols) != 1:
+        return {**unavailable, "status": "invalid",
+                "message": "พบ QR มากกว่าหนึ่งรายการ จึงระบุรายการโอนจาก QR ไม่ได้"}
+    payload = symbols[0].text
+    if not isinstance(payload, str) or not payload or len(payload) > MAX_QR_PAYLOAD_CHARS:
+        return {**unavailable, "status": "invalid",
+                "message": "QR ไม่มีข้อความที่อ่านได้หรือมีข้อมูลยาวผิดปกติ"}
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    result = {"status": "decoded", "payload_type": "text", "checksum_valid": None,
+              "payload_fingerprint": fingerprint,
+              "message": "อ่าน QR ได้ แต่รูปแบบนี้ไม่ยืนยันว่ามีเงินเข้าบัญชี"}
+    if payload.startswith("000201") or payload.startswith("000202"):
+        valid = _emv_qr_checksum_valid(payload)
+        return {**result, "status": "decoded" if valid else "invalid",
+                "payload_type": "emv_payment", "checksum_valid": valid,
+                "message": ("QR ชำระเงินผ่านการตรวจรูปแบบและ CRC แต่ไม่ยืนยันว่าโอนเงินจริง"
+                            if valid else "QR ชำระเงินมีรูปแบบหรือ CRC ไม่ถูกต้อง โปรดตรวจด้วยตนเอง")}
+    if payload.lower().startswith(("http://", "https://")):
+        try:
+            parsed = urlsplit(payload)
+        except ValueError:
+            return {**result, "status": "invalid", "payload_type": "url",
+                    "message": "รูปแบบลิงก์ใน QR ไม่ถูกต้อง โปรดตรวจสลิปด้วยตนเอง"}
+        if parsed.hostname:
+            return {**result, "payload_type": "url",
+                    "message": "อ่าน QR แบบลิงก์ได้ ระบบไม่เปิดลิงก์และยังไม่ยืนยันว่าโอนเงินจริง"}
+    return result
 
 
 def eligible_teacher(conn: sqlite3.Connection, teacher_id: str) -> bool:
@@ -215,7 +388,13 @@ def verify_password(password: str, encoded: str) -> bool:
         return False
 
 
-DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(24))
+# Nonexistent accounts still run the same scrypt verification as real users.
+# This fixed, unused digest has no account attached to it; precomputing it
+# avoids doing a separate expensive scrypt while every cold worker imports.
+DUMMY_PASSWORD_HASH = (
+    "scrypt$32768$8$1$UGh5c2ljc1BsdXNEdW1teQ==$"
+    "AgsB4yT4trVwWj9eDCC5FIm0H1jYwg3x8awNee3YNJUJabo-2OrAL37T96sAVZrayUYohzadZ9S3wpYoterGow=="
+)
 
 
 def parse_datetime(value: str) -> int:
@@ -281,6 +460,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   csrf_token TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+-- Expire old sessions inside the same database statement that creates a new
+-- session. This preserves cleanup while avoiding a separate remote write on
+-- every successful login.
+CREATE TRIGGER IF NOT EXISTS sessions_cleanup_expired AFTER INSERT ON sessions
+BEGIN
+  DELETE FROM sessions WHERE expires_at<=NEW.created_at;
+END;
 CREATE TABLE IF NOT EXISTS courses (
   id TEXT PRIMARY KEY, course_code TEXT UNIQUE, subject_code TEXT, title TEXT NOT NULL, subject TEXT NOT NULL,
   level TEXT NOT NULL CHECK(level IN ('middle','high')),
@@ -365,6 +551,14 @@ CREATE TABLE IF NOT EXISTS payment_claims (
   created_at INTEGER NOT NULL, reviewed_by TEXT REFERENCES users(id), reviewed_at INTEGER,
   CHECK(amount_satang > 0)
 );
+CREATE TABLE IF NOT EXISTS payment_slips (
+  claim_id TEXT PRIMARY KEY REFERENCES payment_claims(id),
+  mime_type TEXT NOT NULL CHECK(mime_type IN ('image/jpeg','image/png','image/webp')),
+  content BLOB NOT NULL,
+  sha256 TEXT NOT NULL UNIQUE,
+  uploaded_at INTEGER NOT NULL,
+  CHECK(length(content) BETWEEN 1 AND 870400)
+);
 CREATE TABLE IF NOT EXISTS payments (
   id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL REFERENCES invoices(id),
   amount_satang INTEGER NOT NULL, method TEXT NOT NULL, reference TEXT NOT NULL,
@@ -439,6 +633,85 @@ CREATE TABLE IF NOT EXISTS code_counters (
 );
 """
 SCHEMA += SHEET_SYNC_SCHEMA
+
+SLIP_VERIFICATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS payment_claim_verifications (
+  claim_id TEXT PRIMARY KEY REFERENCES payment_claims(id),
+  verdict TEXT NOT NULL CHECK(verdict IN ('correct','incorrect')),
+  note TEXT,
+  reviewed_by TEXT NOT NULL REFERENCES users(id),
+  reviewed_at INTEGER NOT NULL
+);
+"""
+SCHEMA += SLIP_VERIFICATION_SCHEMA
+
+PORTAL_FEATURE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS course_formats (
+  course_id TEXT PRIMARY KEY REFERENCES courses(id),
+  format TEXT NOT NULL CHECK(format='individual')
+);
+CREATE TABLE IF NOT EXISTS individual_monthly_invoices (
+  invoice_id TEXT PRIMARY KEY REFERENCES invoices(id),
+  enrollment_id TEXT NOT NULL REFERENCES enrollments(id),
+  period TEXT NOT NULL CHECK(length(period)=7),
+  rate_satang_per_hour INTEGER NOT NULL CHECK(rate_satang_per_hour=30000),
+  UNIQUE(enrollment_id,period)
+);
+CREATE TABLE IF NOT EXISTS individual_billing_lines (
+  time_entry_id TEXT NOT NULL REFERENCES time_entries(id),
+  student_id TEXT NOT NULL REFERENCES users(id),
+  invoice_id TEXT NOT NULL REFERENCES invoices(id),
+  minutes INTEGER NOT NULL CHECK(minutes>0),
+  amount_satang INTEGER NOT NULL CHECK(amount_satang>0),
+  PRIMARY KEY(time_entry_id,student_id)
+);
+CREATE INDEX IF NOT EXISTS individual_billing_lines_invoice
+  ON individual_billing_lines(invoice_id);
+CREATE TABLE IF NOT EXISTS course_progress_targets (
+  course_id TEXT PRIMARY KEY REFERENCES courses(id),
+  target_sessions INTEGER NOT NULL CHECK(target_sessions BETWEEN 1 AND 200)
+);
+CREATE TABLE IF NOT EXISTS teacher_availability (
+  id TEXT PRIMARY KEY, teacher_id TEXT NOT NULL REFERENCES users(id),
+  starts_at INTEGER NOT NULL, ends_at INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_by TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL,
+  CHECK(ends_at>starts_at)
+);
+CREATE INDEX IF NOT EXISTS teacher_availability_future
+  ON teacher_availability(teacher_id,active,starts_at);
+CREATE TABLE IF NOT EXISTS inbox_notifications (
+  id TEXT PRIMARY KEY, audit_event_id TEXT NOT NULL REFERENCES audit_events(id),
+  recipient_kind TEXT NOT NULL CHECK(recipient_kind IN ('admin','user')),
+  recipient_user_id TEXT REFERENCES users(id), event_type TEXT NOT NULL,
+  created_at INTEGER NOT NULL, read_at INTEGER,
+  CHECK((recipient_kind='admin' AND recipient_user_id IS NULL) OR
+        (recipient_kind='user' AND recipient_user_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS inbox_notifications_recipient
+  ON inbox_notifications(recipient_kind,recipient_user_id,created_at DESC);
+CREATE TABLE IF NOT EXISTS assignments (
+  id TEXT PRIMARY KEY,
+  assignee_id TEXT NOT NULL REFERENCES users(id),
+  course_id TEXT REFERENCES courses(id),
+  title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 160),
+  description TEXT NOT NULL DEFAULT '' CHECK(length(description) <= 2000),
+  due_date TEXT,
+  status TEXT NOT NULL DEFAULT 'open'
+    CHECK(status IN ('open','completed','cancelled')),
+  created_by TEXT NOT NULL REFERENCES users(id),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  CHECK((status='completed' AND completed_at IS NOT NULL) OR
+        (status!='completed' AND completed_at IS NULL))
+);
+CREATE INDEX IF NOT EXISTS assignments_recipient_status
+  ON assignments(assignee_id,status,due_date,created_at);
+CREATE INDEX IF NOT EXISTS assignments_created_at
+  ON assignments(created_at DESC);
+"""
+SCHEMA += PORTAL_FEATURE_SCHEMA
 
 
 def migrate_outbox_schema(conn: sqlite3.Connection) -> None:
@@ -687,6 +960,60 @@ def seed_initial_courses(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def seed_individual_courses(conn: sqlite3.Connection) -> None:
+    """Add one 1:1 offer per subject, preserving all owner-created courses.
+
+    Production runs this once through the explicit database initialization
+    command; it is intentionally absent from the remote request cold path.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    if not conn.execute("SELECT 1 FROM app_migrations WHERE key=?",
+                        (INDIVIDUAL_COURSE_SEED_MIGRATION,)).fetchone():
+        created = 0
+        for (level, subject), (subject_code, subject_name) in COURSE_CATALOG.items():
+            existing = conn.execute(
+                "SELECT 1 FROM courses c JOIN course_formats f ON f.course_id=c.id "
+                "WHERE c.level=? AND c.subject=? AND c.active=1 "
+                "AND f.format='individual' LIMIT 1",
+                (level, subject),
+            ).fetchone()
+            if existing:
+                continue
+            course_id = uid()
+            course_code = next_public_code(conn, subject_code + "-ONE")
+            title = f"{subject_name} {'ม.ต้น' if level == 'middle' else 'ม.ปลาย'} · ตัวต่อตัว"
+            conn.execute(
+                "INSERT INTO courses(id,course_code,subject_code,title,subject,level,price_satang,"
+                "teacher_id,capacity,created_at) VALUES(?,?,?,?,?,?,?,NULL,?,?)",
+                (course_id, course_code, subject_code, title, subject, level,
+                 INDIVIDUAL_TUITION_SATANG_PER_HOUR, INITIAL_COURSE_CAPACITY, now()),
+            )
+            conn.execute("INSERT INTO course_formats(course_id,format) VALUES(?,'individual')",
+                         (course_id,))
+            conn.execute(
+                "INSERT INTO course_progress_targets(course_id,target_sessions) VALUES(?,12)",
+                (course_id,),
+            )
+            conn.execute(
+                "INSERT INTO audit_events(id,actor_id,entity,entity_id,action,details,created_at) "
+                "VALUES(?,NULL,'course',?,'seed_individual_course',?,?)",
+                (uid(), course_id, json.dumps({"course_code": course_code,
+                                               "rate_satang_per_hour": INDIVIDUAL_TUITION_SATANG_PER_HOUR},
+                                              ensure_ascii=False, separators=(",", ":")), now()),
+            )
+            created += 1
+        if created:
+            conn.execute(
+                "INSERT INTO sheet_sync_state(dataset,revision,updated_at,next_attempt_at) "
+                "VALUES('courses',1,?,0) ON CONFLICT(dataset) DO UPDATE SET "
+                "revision=revision+1,updated_at=excluded.updated_at,next_attempt_at=0",
+                (now(),),
+            )
+        conn.execute("INSERT INTO app_migrations(key,applied_at) VALUES(?,?)",
+                     (INDIVIDUAL_COURSE_SEED_MIGRATION, now()))
+    conn.commit()
+
+
 def receipt_number(payment_id: str, paid_at: int) -> str:
     return "PP-RC-" + datetime.fromtimestamp(paid_at, BANGKOK).strftime("%Y%m%d") + "-" + payment_id[:12].upper()
 
@@ -793,6 +1120,11 @@ class RateLimiter:
                 fail(429, "rate_limited", "Too many attempts; try again later")
             queue.append(current)
 
+    def check_login_attempt(self, client_ip: str, identifier: str, *, conn=None) -> None:
+        """Count both independent login limits before checking credentials."""
+        self.check(f"ip:{client_ip}", 20, 15 * 60, conn=conn)
+        self.check(f"login:{identifier}", 10, 15 * 60, conn=conn)
+
 
 class ClosingConnection(sqlite3.Connection):
     """Commit/rollback at context exit and release the per-request handle."""
@@ -817,6 +1149,8 @@ class PhysicsPlusApp:
             self.allowed_origins.add(f"http://127.0.0.1:{parsed.port or 80}")
         self.static_dir = Path(static_dir).resolve() if static_dir else None
         self.limiter = RateLimiter()
+        self._slip_qr_cache: OrderedDict[str, dict] = OrderedDict()
+        self._slip_qr_cache_lock = threading.Lock()
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
@@ -834,6 +1168,7 @@ class PhysicsPlusApp:
         with self.connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
+            self._session_cleanup_trigger_ready = True
             migrate_outbox_schema(conn)
             migrate_academic_schema(conn)
             migrate_student_codes(conn)
@@ -841,6 +1176,7 @@ class PhysicsPlusApp:
             migrate_brand_codes(conn)
             seed_initial_teachers(conn)
             seed_initial_courses(conn)
+            seed_individual_courses(conn)
             migrate_receipts(conn)
             seed_payment_account_and_sheet_queue(conn)
             conn.execute("BEGIN IMMEDIATE")
@@ -891,6 +1227,39 @@ class PhysicsPlusApp:
             (uid(), audit_event_id, event_type, "user" if recipient_user_id else "admin",
              recipient_user_id, current, current),
         )
+        conn.execute(
+            "INSERT INTO inbox_notifications"
+            "(id,audit_event_id,recipient_kind,recipient_user_id,event_type,created_at) "
+            "SELECT ?,?,?,?,?,? WHERE NOT EXISTS "
+            "(SELECT 1 FROM inbox_notifications WHERE audit_event_id=?)",
+            (uid(), audit_event_id, "user" if recipient_user_id else "admin",
+             recipient_user_id, event_type, current, audit_event_id),
+        )
+
+    @staticmethod
+    def _inbox(conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
+        where = "(n.recipient_kind='admin' OR n.recipient_user_id=?)" if user["role"] == "admin" else "n.recipient_user_id=?"
+        rows = conn.execute(
+            "SELECT n.id,n.event_type,n.created_at,n.read_at,a.entity,a.entity_id "
+            "FROM inbox_notifications n JOIN audit_events a ON a.id=n.audit_event_id "
+            f"WHERE {where} ORDER BY n.created_at DESC,n.id DESC LIMIT 40",
+            (user["id"],),
+        ).fetchall()
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM inbox_notifications n WHERE {where} AND n.read_at IS NULL",
+            (user["id"],),
+        ).fetchone()[0]
+        return Response(200, {"notifications": [dict(row) for row in rows], "unread_count": count})
+
+    def _read_inbox_notice(self, conn: sqlite3.Connection, user: sqlite3.Row, notice_id: str) -> Response:
+        where = "(recipient_kind='admin' OR recipient_user_id=?)" if user["role"] == "admin" else "recipient_user_id=?"
+        updated = conn.execute(
+            f"UPDATE inbox_notifications SET read_at=COALESCE(read_at,?) WHERE id=? AND {where}",
+            (now(), notice_id, user["id"]),
+        ).rowcount
+        if not updated:
+            fail(404, "notification_not_found", "Notification not found")
+        return Response(200, {"id": notice_id, "read": True})
 
     def dispatch_outbox(self, send_email, *, limit: int = 2,
                         admin_email: str | None = None) -> dict[str, int]:
@@ -1027,7 +1396,9 @@ class PhysicsPlusApp:
             self.audit(conn, user_id, "user", user_id, "bootstrap_admin")
             conn.commit()
 
-    def _session(self, conn: sqlite3.Connection, cookie_header: str) -> tuple[sqlite3.Row | None, sqlite3.Row | None, str | None]:
+    @staticmethod
+    def _session_token(cookie_header: str) -> str | None:
+        """Reject absent or malformed tokens without opening remote storage."""
         cookie = SimpleCookie()
         try:
             cookie.load(cookie_header)
@@ -1035,9 +1406,15 @@ class PhysicsPlusApp:
         except Exception:
             token = None
         if token is None:
-            return None, None, None
+            return None
         raw = token.value
         if not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", raw):
+            return None
+        return raw
+
+    def _session(self, conn: sqlite3.Connection, cookie_header: str) -> tuple[sqlite3.Row | None, sqlite3.Row | None, str | None]:
+        raw = self._session_token(cookie_header)
+        if raw is None:
             return None, None, None
         token_hash = hashlib.sha256(raw.encode()).hexdigest()
         result = conn.execute("SELECT s.*,u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.status='active'", (token_hash, now())).fetchone()
@@ -1046,8 +1423,13 @@ class PhysicsPlusApp:
     def _new_session(self, conn: sqlite3.Connection, user_id: str) -> tuple[str, str]:
         raw = secrets.token_urlsafe(32)
         csrf = secrets.token_urlsafe(32)
-        conn.execute("DELETE FROM sessions WHERE expires_at<=?", (now(),))
-        conn.execute("INSERT INTO sessions VALUES(?,?,?,?,?)", (hashlib.sha256(raw.encode()).hexdigest(), user_id, csrf, now(), now() + SESSION_SECONDS))
+        created_at = now()
+        # The trigger runs in this INSERT's transaction. Existing remote
+        # deployments without the new trigger keep the old cleanup behavior
+        # until initialize_remote() installs it.
+        if not getattr(self, "_session_cleanup_trigger_ready", False):
+            conn.execute("DELETE FROM sessions WHERE expires_at<=?", (created_at,))
+        conn.execute("INSERT INTO sessions VALUES(?,?,?,?,?)", (hashlib.sha256(raw.encode()).hexdigest(), user_id, csrf, created_at, created_at + SESSION_SECONDS))
         cookie = f"pp_session={raw}; HttpOnly; SameSite=Lax; Path=/; Max-Age={SESSION_SECONDS}"
         if self.origin.startswith("https://"):
             cookie += "; Secure"
@@ -1095,6 +1477,8 @@ class PhysicsPlusApp:
         """Authorize protected HTML and optionally reuse that read for admin counts."""
         if route not in {"/dashboard.html", "/student", "/teacher", "/admin"}:
             return None, None
+        if self._session_token(cookie_header) is None:
+            return "login", None
         with self.connect() as conn:
             session, user, _ = self._session(conn, cookie_header)
             if user is None:
@@ -1132,21 +1516,41 @@ class PhysicsPlusApp:
             if method == "GET" and path == "/api/health":
                 return Response(200, {"ok": True, "database": "sqlite"})
 
+            auth_submission = method == "POST" and path in {"/api/auth/register", "/api/auth/login"}
+            cookie_header = headers.get("cookie", "")
+            if not auth_submission and self._session_token(cookie_header) is None:
+                if method == "GET" and path == "/api/me":
+                    return Response(200, {"authenticated": False})
+                fail(401, "unauthenticated", "Sign in first")
+
             with self.connect() as conn:
-                session, user, token_hash = self._session(conn, headers.get("cookie", ""))
+                # A credential submission establishes a new session; reading
+                # a stale session cookie first adds latency and has no bearing
+                # on password verification or persistent rate limits.
+                session, user, token_hash = ((None, None, None) if auth_submission
+                                             else self._session(conn, cookie_header))
                 if method == "GET" and path == "/api/me":
                     return Response(200, self._auth_payload(user, session["csrf_token"]) if user else {"authenticated": False})
 
-                if path in {"/api/auth/register", "/api/auth/login"} and method == "POST":
-                    self.limiter.check(f"ip:{client_ip}", 20, 15 * 60, conn=conn)
-                    if path.endswith("register"):
-                        identifier = normalize_email(required_str(data, "email", 254))
-                    else:
-                        raw_login = data.get("login", data.get("email"))
-                        if not isinstance(raw_login, str) or not raw_login.strip():
-                            fail(400, "invalid_input", "login is required")
-                        identifier = normalize_email(raw_login) if "@" in raw_login else normalize_username(raw_login)
-                    self.limiter.check(f"login:{identifier}", 10, 15 * 60, conn=conn)
+                if auth_submission:
+                    # Validate first so remote storage can count both keys in
+                    # one atomic statement. Malformed identifiers still count
+                    # against the IP, with a blocked IP taking precedence.
+                    identifier_error = None
+                    try:
+                        if path.endswith("register"):
+                            identifier = normalize_email(required_str(data, "email", 254))
+                        else:
+                            raw_login = data.get("login", data.get("email"))
+                            if not isinstance(raw_login, str) or not raw_login.strip():
+                                fail(400, "invalid_input", "login is required")
+                            identifier = normalize_email(raw_login) if "@" in raw_login else normalize_username(raw_login)
+                    except ApiError as exc:
+                        identifier_error = exc
+                    if identifier_error is not None:
+                        self.limiter.check(f"ip:{client_ip}", 20, 15 * 60, conn=conn)
+                        raise identifier_error
+                    self.limiter.check_login_attempt(client_ip, identifier, conn=conn)
                     conn.execute("BEGIN IMMEDIATE")
                     response = self._register(conn, data, identifier) if path.endswith("register") else self._login(conn, data, identifier)
                     conn.commit()
@@ -1242,13 +1646,33 @@ class PhysicsPlusApp:
         return Response(200, {"ok": True, "signed_out": True}, {"Set-Cookie": self._clear_cookie()})
 
     def _dispatch(self, conn: sqlite3.Connection, method: str, path: str, query: dict, data: dict, user: sqlite3.Row) -> Response:
+        if method == "GET" and path == "/api/sync/revision":
+            # Only persisted business changes advance dataset revisions. A
+            # login still has an audit record, but must not force every open
+            # dashboard to reload its data on the next 30-second poll.
+            revision = conn.execute(
+                "SELECT COALESCE(SUM(revision),0) FROM sheet_sync_state"
+            ).fetchone()[0]
+            return Response(200, {"revision": revision})
+        if method == "GET" and path == "/api/notifications":
+            return self._inbox(conn, user)
+        notice_match = re.fullmatch(r"/api/notifications/([0-9a-f]{32})/read", path)
+        if method == "POST" and notice_match:
+            return self._read_inbox_notice(conn, user, notice_match.group(1))
+        if method == "GET" and path == "/api/tasks":
+            return self._tasks(conn, user)
+        task_complete = re.fullmatch(r"/api/tasks/([0-9a-f]{32})/complete", path)
+        if method == "POST" and task_complete:
+            return self._complete_task(conn, user, task_complete.group(1))
         if method == "GET" and path == "/api/payment-account":
             if user["role"] not in {"student", "admin"}:
                 fail(403, "forbidden", "Payment details are unavailable for this account")
             return Response(200, {"payment_account": self._payment_account(conn)})
         if method == "GET" and path == "/api/courses":
-            rows = conn.execute("SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,c.price_satang,c.capacity,u.name teacher_name,u.public_code teacher_code,(SELECT COUNT(*) FROM enrollments e WHERE e.course_id=c.id AND e.status='active') enrolled_count FROM courses c LEFT JOIN users u ON u.id=c.teacher_id WHERE c.active=1 ORDER BY c.created_at DESC").fetchall()
+            rows = conn.execute("SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,CASE WHEN f.course_id IS NULL THEN c.price_satang ELSE 30000 END price_satang,c.capacity,u.name teacher_name,u.public_code teacher_code,CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format,COALESCE(p.target_sessions,12) target_sessions,(SELECT COUNT(*) FROM enrollments e WHERE e.course_id=c.id AND e.status='active') enrolled_count FROM courses c LEFT JOIN users u ON u.id=c.teacher_id LEFT JOIN course_formats f ON f.course_id=c.id LEFT JOIN course_progress_targets p ON p.course_id=c.id WHERE c.active=1 ORDER BY CASE WHEN f.course_id IS NULL THEN 0 ELSE 1 END,c.created_at DESC").fetchall()
             return Response(200, {"courses": [dict(row) for row in rows]})
+        if method == "GET" and path == "/api/teacher-availability":
+            return self._teacher_availability(conn, user)
         if method == "GET" and path == "/api/student/dashboard":
             self._require_role(user, "student")
             return self._student_dashboard(conn, user)
@@ -1261,6 +1685,16 @@ class PhysicsPlusApp:
         if method == "POST" and path == "/api/student/payment-claims":
             self._require_role(user, "student")
             return self._payment_claim(conn, user, data)
+        slip_match = re.fullmatch(r"/api/admin/payment-claims/([0-9a-f]{32})/slip", path)
+        if method == "GET" and slip_match:
+            self._require_role(user, "admin")
+            return self._payment_slip(conn, slip_match.group(1))
+        verification_match = re.fullmatch(r"/api/admin/payment-claims/([0-9a-f]{32})/verification", path)
+        if verification_match and method in {"GET", "POST"}:
+            self._require_role(user, "admin")
+            claim_id = verification_match.group(1)
+            return (self._payment_claim_verification(conn, claim_id) if method == "GET" else
+                    self._set_payment_claim_verification(conn, user, claim_id, data))
         receipt_match = re.fullmatch(r"/api/receipts/([0-9a-f]{32})", path)
         if method == "GET" and receipt_match:
             return self._receipt(conn, user, receipt_match.group(1))
@@ -1313,9 +1747,19 @@ class PhysicsPlusApp:
             return Response(200, {"users": self._admin_users(conn)})
         if method == "GET" and path == "/api/admin/academic":
             return self._admin_academic(conn)
+        if method == "GET" and path == "/api/admin/tasks":
+            return self._tasks(conn, user)
+        if method == "POST" and path == "/api/admin/tasks":
+            return self._create_task(conn, user, data)
+        task_edit = re.fullmatch(r"/api/admin/tasks/([0-9a-f]{32})", path)
+        if method == "PUT" and task_edit:
+            return self._edit_task(conn, user, task_edit.group(1), data)
+        task_cancel = re.fullmatch(r"/api/admin/tasks/([0-9a-f]{32})/cancel", path)
+        if method == "POST" and task_cancel:
+            return self._cancel_task(conn, user, task_cancel.group(1))
         if method == "POST" and path == "/api/admin/account":
             return self._update_admin_account(conn, user, data)
-        report_match = re.fullmatch(r"/api/admin/reports/(students|teachers|courses|classes|class_rosters|enrollments|invoices|payments|receipts|claims|teaching|payroll|rates)", path)
+        report_match = re.fullmatch(r"/api/admin/reports/(students|teachers|courses|classes|class_rosters|enrollments|invoices|payments|receipts|claims|teaching|payroll|rates|teacher_availability|assignments)", path)
         if method == "GET" and report_match:
             return self._report(conn, report_match.group(1), query)
         if method == "POST" and path == "/api/admin/users":
@@ -1341,6 +1785,11 @@ class PhysicsPlusApp:
             return self._manage_user(conn, user, account_match.group(1), account_match.group(2))
         if method == "POST" and path == "/api/admin/courses":
             return self._create_course(conn, user, data)
+        if method == "POST" and path == "/api/admin/teacher-availability":
+            return self._create_teacher_availability(conn, user, data)
+        availability_cancel = re.fullmatch(r"/api/admin/teacher-availability/([0-9a-f]{32})/cancel", path)
+        if method == "POST" and availability_cancel:
+            return self._cancel_teacher_availability(conn, user, availability_cancel.group(1))
         course_edit_match = re.fullmatch(r"/api/admin/courses/([0-9a-f]{32})", path)
         if method == "PUT" and course_edit_match:
             return self._edit_course(conn, user, course_edit_match.group(1), data)
@@ -1371,6 +1820,10 @@ class PhysicsPlusApp:
             return self._record_payment(conn, user, data, None)
         if method == "GET" and path == "/api/admin/invoices":
             return self._admin_invoices(conn)
+        if method == "GET" and path == "/api/admin/individual-billing":
+            return self._individual_billing_preview(conn, query.get("period", [None])[0])
+        if method == "POST" and path == "/api/admin/individual-billing":
+            return self._issue_individual_billing(conn, user, data)
         if method == "POST" and path == "/api/admin/invoices":
             return self._create_invoice(conn, user, data)
         invoice_match = re.fullmatch(r"/api/admin/invoices/([0-9a-f]{32})/(amount|due-date|void|restore)", path)
@@ -1400,12 +1853,191 @@ class PhysicsPlusApp:
         fail(404, "not_found", "API endpoint not found")
 
     def _student_dashboard(self, conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
-        rows = conn.execute("SELECT e.id enrollment_id,c.id course_id,c.title,c.subject,c.level,e.status,i.id invoice_id,i.invoice_number,i.amount_satang,i.status invoice_status,i.due_date,COALESCE((SELECT SUM(amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang FROM enrollments e JOIN courses c ON c.id=e.course_id LEFT JOIN invoices i ON i.enrollment_id=e.id WHERE e.student_id=? ORDER BY e.created_at DESC", (user["id"],)).fetchall()
-        invoices = conn.execute("SELECT i.id,i.invoice_number,i.description,i.amount_satang,i.status,i.due_date,i.enrollment_id,COALESCE((SELECT SUM(amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang FROM invoices i WHERE i.student_id=? ORDER BY i.created_at DESC", (user["id"],)).fetchall()
+        rows = conn.execute("SELECT e.id enrollment_id,c.id course_id,c.title,c.subject,c.level,e.status,CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format,i.id invoice_id,i.invoice_number,i.amount_satang,i.status invoice_status,i.due_date,COALESCE((SELECT SUM(amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang FROM enrollments e JOIN courses c ON c.id=e.course_id LEFT JOIN course_formats f ON f.course_id=c.id LEFT JOIN invoices i ON i.enrollment_id=e.id WHERE e.student_id=? ORDER BY e.created_at DESC", (user["id"],)).fetchall()
+        invoices = conn.execute("SELECT i.id,i.invoice_number,i.description,i.amount_satang,i.status,i.due_date,COALESCE(i.enrollment_id,m.enrollment_id) enrollment_id,m.period individual_period,COALESCE((SELECT SUM(b.minutes) FROM individual_billing_lines b WHERE b.invoice_id=i.id),0) individual_minutes,COALESCE((SELECT SUM(amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang FROM invoices i LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id WHERE i.student_id=? ORDER BY i.created_at DESC", (user["id"],)).fetchall()
         claims = conn.execute("SELECT pc.id,pc.invoice_id,pc.amount_satang,pc.reference,pc.status,pc.created_at FROM payment_claims pc WHERE pc.student_id=? ORDER BY pc.created_at DESC", (user["id"],)).fetchall()
         receipts = conn.execute("SELECT id,receipt_number,invoice_id,invoice_number,enrollment_id,course_code,course_title,description,amount_satang,method,reference,paid_at,issued_at FROM receipts WHERE student_id=? ORDER BY paid_at DESC,id DESC", (user["id"],)).fetchall()
         profile = conn.execute("SELECT grade,school,guardian_name,guardian_phone,guardian_relationship FROM student_profiles WHERE user_id=?", (user["id"],)).fetchone()
         return Response(200, {"enrollments": [dict(row) for row in rows], "invoices": [dict(row) for row in invoices], "payment_claims": [dict(row) for row in claims], "receipts": [dict(row) for row in receipts], "profile": dict(profile) if profile else None})
+
+    @staticmethod
+    def _task_row(conn: sqlite3.Connection, task_id: str) -> dict | None:
+        row = conn.execute(
+            "SELECT t.id,t.assignee_id,u.name assignee_name,u.role assignee_role,"
+            "u.public_code assignee_code,t.course_id,c.title course_title,"
+            "c.course_code,t.title,t.description,t.due_date,t.status,"
+            "t.created_by,t.created_at,t.updated_at,t.completed_at "
+            "FROM assignments t JOIN users u ON u.id=t.assignee_id "
+            "LEFT JOIN courses c ON c.id=t.course_id WHERE t.id=?",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _tasks(self, conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
+        where = "" if user["role"] == "admin" else "WHERE t.assignee_id=?"
+        params = () if user["role"] == "admin" else (user["id"],)
+        rows = conn.execute(
+            "SELECT t.id,t.assignee_id,u.name assignee_name,u.role assignee_role,"
+            "u.public_code assignee_code,t.course_id,c.title course_title,"
+            "c.course_code,t.title,t.description,t.due_date,t.status,"
+            "t.created_by,t.created_at,t.updated_at,t.completed_at "
+            "FROM assignments t JOIN users u ON u.id=t.assignee_id "
+            "LEFT JOIN courses c ON c.id=t.course_id "
+            f"{where} ORDER BY CASE t.status WHEN 'open' THEN 0 "
+            "WHEN 'completed' THEN 1 ELSE 2 END,"
+            "CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END,t.due_date,t.created_at DESC "
+            "LIMIT 250",
+            params,
+        ).fetchall()
+        counts = conn.execute(
+            "SELECT COUNT(*) total_count,COALESCE(SUM(status='open'),0) open_count,"
+            "COALESCE(SUM(status='completed'),0) completed_count "
+            f"FROM assignments t {where}", params,
+        ).fetchone()
+        return Response(200, {"tasks": [dict(row) for row in rows], **dict(counts)})
+
+    @staticmethod
+    def _task_due_date(data: dict) -> str | None:
+        due_date = optional_str(data, "due_date", 10)
+        if due_date is None:
+            return None
+        if not DATE_RE.fullmatch(due_date):
+            fail(400, "invalid_due_date", "due_date must be YYYY-MM-DD")
+        try:
+            parsed = datetime.strptime(due_date, "%Y-%m-%d").date()
+        except ValueError:
+            fail(400, "invalid_due_date", "due_date must be a real calendar date")
+        if parsed.isoformat() != due_date:
+            fail(400, "invalid_due_date", "due_date must be YYYY-MM-DD")
+        return due_date
+
+    @staticmethod
+    def _validate_task_target(conn: sqlite3.Connection, assignee_id: str,
+                              course_id: str | None) -> None:
+        assignee = conn.execute(
+            "SELECT id,email,role,status FROM users WHERE id=?", (assignee_id,)
+        ).fetchone()
+        if (not assignee or assignee["role"] not in {"student", "teacher"}
+                or assignee["status"] != "active" or is_pending_teacher(assignee)):
+            fail(400, "invalid_assignee", "Choose an active student or teacher account")
+        if course_id is None:
+            return
+        course = conn.execute(
+            "SELECT id,active,teacher_id FROM courses WHERE id=?", (course_id,)
+        ).fetchone()
+        if not course or course["active"] != 1:
+            fail(400, "invalid_course", "Choose an active course")
+        if assignee["role"] == "student":
+            linked = conn.execute(
+                "SELECT 1 FROM enrollments WHERE course_id=? AND student_id=? AND status='active'",
+                (course_id, assignee_id),
+            ).fetchone()
+        else:
+            linked = course["teacher_id"] == assignee_id or conn.execute(
+                "SELECT 1 FROM class_sessions WHERE course_id=? AND teacher_id=? "
+                "AND status='scheduled' LIMIT 1", (course_id, assignee_id),
+            ).fetchone()
+        if not linked:
+            fail(400, "assignee_course_mismatch", "This account is not linked to the course")
+
+    def _create_task(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                     data: dict) -> Response:
+        assignee_id = required_str(data, "assignee_id", 32)
+        course_id = optional_str(data, "course_id", 32)
+        title = required_str(data, "title", 160)
+        description = optional_str(data, "description", 2000) or ""
+        due_date = self._task_due_date(data)
+        self._validate_task_target(conn, assignee_id, course_id)
+        task_id, current = uid(), now()
+        conn.execute(
+            "INSERT INTO assignments(id,assignee_id,course_id,title,description,due_date,"
+            "created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, assignee_id, course_id, title, description, due_date,
+             actor["id"], current, current),
+        )
+        event_id = self.audit(conn, actor["id"], "assignment", task_id, "create",
+                              {"assignee_id": assignee_id, "course_id": course_id})
+        self.enqueue_notice(conn, event_id, "task_assigned", assignee_id)
+        return Response(201, {"task": self._task_row(conn, task_id)})
+
+    def _edit_task(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                   task_id: str, data: dict) -> Response:
+        old = self._task_row(conn, task_id)
+        if old is None:
+            fail(404, "task_not_found", "Task not found")
+        if old["status"] != "open":
+            fail(409, "task_closed", "Only open tasks can be edited")
+        editable = {"assignee_id", "course_id", "title", "description", "due_date"}
+        if not editable.intersection(data):
+            fail(400, "invalid_input", "Provide at least one task field")
+        assignee_id = (required_str(data, "assignee_id", 32) if "assignee_id" in data
+                       else old["assignee_id"])
+        course_id = (optional_str(data, "course_id", 32) if "course_id" in data
+                     else old["course_id"])
+        title = required_str(data, "title", 160) if "title" in data else old["title"]
+        description = (optional_str(data, "description", 2000) or ""
+                       if "description" in data else old["description"])
+        due_date = self._task_due_date(data) if "due_date" in data else old["due_date"]
+        self._validate_task_target(conn, assignee_id, course_id)
+        changed = any((old[key] != value) for key, value in {
+            "assignee_id": assignee_id, "course_id": course_id, "title": title,
+            "description": description, "due_date": due_date,
+        }.items())
+        if not changed:
+            return Response(200, {"task": old})
+        conn.execute(
+            "UPDATE assignments SET assignee_id=?,course_id=?,title=?,description=?,"
+            "due_date=?,updated_at=? WHERE id=?",
+            (assignee_id, course_id, title, description, due_date, now(), task_id),
+        )
+        event_id = self.audit(conn, actor["id"], "assignment", task_id, "update",
+                              {"assignee_id": assignee_id, "course_id": course_id})
+        if assignee_id != old["assignee_id"]:
+            self.enqueue_notice(conn, event_id, "task_assigned", assignee_id)
+            old_event = self.audit(conn, actor["id"], "assignment", task_id, "unassign",
+                                   {"assignee_id": old["assignee_id"]})
+            self.enqueue_notice(conn, old_event, "task_unassigned", old["assignee_id"])
+        else:
+            self.enqueue_notice(conn, event_id, "task_updated", assignee_id)
+        return Response(200, {"task": self._task_row(conn, task_id)})
+
+    def _complete_task(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                       task_id: str) -> Response:
+        task = self._task_row(conn, task_id)
+        if task is None or (actor["role"] != "admin" and task["assignee_id"] != actor["id"]):
+            fail(404, "task_not_found", "Task not found")
+        if task["status"] == "completed":
+            return Response(200, {"task": task})
+        if task["status"] != "open":
+            fail(409, "task_closed", "Cancelled tasks cannot be completed")
+        current = now()
+        conn.execute(
+            "UPDATE assignments SET status='completed',completed_at=?,updated_at=? WHERE id=?",
+            (current, current, task_id),
+        )
+        event_id = self.audit(conn, actor["id"], "assignment", task_id, "complete")
+        if actor["id"] != task["assignee_id"]:
+            self.enqueue_notice(conn, event_id, "task_completed", task["assignee_id"])
+        else:
+            self.enqueue_notice(conn, event_id, "task_completed")
+        return Response(200, {"task": self._task_row(conn, task_id)})
+
+    def _cancel_task(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                     task_id: str) -> Response:
+        task = self._task_row(conn, task_id)
+        if task is None:
+            fail(404, "task_not_found", "Task not found")
+        if task["status"] == "cancelled":
+            return Response(200, {"task": task})
+        if task["status"] != "open":
+            fail(409, "task_closed", "Completed tasks cannot be cancelled")
+        conn.execute(
+            "UPDATE assignments SET status='cancelled',updated_at=? WHERE id=?",
+            (now(), task_id),
+        )
+        event_id = self.audit(conn, actor["id"], "assignment", task_id, "cancel")
+        self.enqueue_notice(conn, event_id, "task_cancelled", task["assignee_id"])
+        return Response(200, {"task": self._task_row(conn, task_id)})
 
     def _receipt(self, conn: sqlite3.Connection, user: sqlite3.Row, receipt_id: str) -> Response:
         if user["role"] not in {"student", "admin"}:
@@ -1431,6 +2063,9 @@ class PhysicsPlusApp:
     def _student_enroll(self, conn: sqlite3.Connection, user: sqlite3.Row, data: dict) -> Response:
         if "amount_satang" in data or "price_satang" in data:
             fail(400, "amount_admin_only", "Students cannot set tuition amounts")
+        confirm_purchase = data.get("confirm_purchase", False)
+        if not isinstance(confirm_purchase, bool):
+            fail(400, "invalid_input", "confirm_purchase must be true or false")
         course_id = required_str(data, "course_id", 32)
         profile = student_profile_input(data)
         course = conn.execute("SELECT * FROM courses WHERE id=? AND active=1", (course_id,)).fetchone()
@@ -1448,6 +2083,21 @@ class PhysicsPlusApp:
         conn.execute("INSERT INTO enrollments(id,course_id,student_id,created_at) VALUES(?,?,?,?)", (enrollment_id, course_id, user["id"], now()))
         event_id = self.audit(conn, user["id"], "enrollment", enrollment_id, "create", {"course_id": course_id})
         self.enqueue_notice(conn, event_id, "student_enrolled")
+        if conn.execute("SELECT 1 FROM course_formats WHERE course_id=?", (course_id,)).fetchone():
+            return Response(201, {"enrollment_id": enrollment_id,
+                                  "status": "awaiting_monthly_billing",
+                                  "rate_satang_per_hour": INDIVIDUAL_TUITION_SATANG_PER_HOUR})
+        if confirm_purchase:
+            due_date = (datetime.now(BANGKOK).date() + timedelta(days=7)).isoformat()
+            invoice = self._create_invoice(conn, user, {
+                "enrollment_id": enrollment_id,
+                "amount_satang": course["price_satang"],
+                "due_date": due_date,
+            })
+            return Response(201, {"enrollment_id": enrollment_id, "status": "awaiting_payment",
+                                  "invoice_id": invoice.body["invoice_id"],
+                                  "invoice_number": invoice.body["invoice_number"],
+                                  "amount_satang": course["price_satang"], "due_date": due_date})
         return Response(201, {"enrollment_id": enrollment_id, "status": "awaiting_invoice"})
 
     def _payment_claim(self, conn: sqlite3.Connection, user: sqlite3.Row, data: dict) -> Response:
@@ -1457,19 +2107,160 @@ class PhysicsPlusApp:
             fail(404, "invoice_not_found", "Invoice is unavailable")
         if "amount_satang" in data:
             fail(400, "amount_admin_only", "Only an administrator can set payment amounts")
-        reference = required_str(data, "reference", 120)
+        mime_type = data.get("slip_mime")
+        encoded = data.get("slip_base64")
+        if mime_type not in {"image/jpeg", "image/png", "image/webp"} or not isinstance(encoded, str) or len(encoded) > (MAX_SLIP_BYTES * 4 // 3 + 8):
+            fail(400, "invalid_slip", "Attach a JPEG, PNG, or WebP payment slip")
+        try:
+            slip = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error):
+            fail(400, "invalid_slip", "Payment slip data is invalid")
+        if not slip or len(slip) > MAX_SLIP_BYTES:
+            fail(400, "invalid_slip", "Payment slip exceeds the 850 KB limit")
+        if not valid_payment_image(slip, mime_type):
+            fail(400, "invalid_slip", "Payment slip file type is invalid")
+        slip_hash = hashlib.sha256(slip).hexdigest()
+        reference = "SLIP-" + slip_hash[:32].upper()
         outstanding = invoice["amount_satang"] - conn.execute("SELECT COALESCE(SUM(amount_satang),0) FROM payments WHERE invoice_id=?", (invoice_id,)).fetchone()[0]
         if outstanding <= 0:
             fail(409, "invoice_paid", "This invoice has no remaining balance")
         if conn.execute("SELECT 1 FROM payment_claims WHERE invoice_id=? AND status='pending'", (invoice_id,)).fetchone():
             fail(409, "claim_pending", "A payment claim is already awaiting review")
+        if conn.execute("SELECT COUNT(*) FROM payment_claims WHERE student_id=? AND created_at>=?", (user["id"], now() - 86400)).fetchone()[0] >= 10:
+            fail(429, "claim_limit", "Too many payment slips today; contact the administrator")
         if conn.execute("SELECT 1 FROM payments WHERE reference=? COLLATE NOCASE", (reference,)).fetchone() or conn.execute("SELECT 1 FROM payment_claims WHERE reference=? COLLATE NOCASE AND status='pending'", (reference,)).fetchone():
             fail(409, "duplicate_payment", "This payment reference is already in use")
+        if conn.execute("SELECT 1 FROM payment_slips WHERE sha256=?", (slip_hash,)).fetchone():
+            fail(409, "duplicate_slip", "This payment slip has already been submitted")
         claim_id = uid()
         conn.execute("INSERT INTO payment_claims(id,invoice_id,student_id,amount_satang,reference,created_at) VALUES(?,?,?,?,?,?)", (claim_id, invoice_id, user["id"], outstanding, reference, now()))
+        conn.execute("INSERT INTO payment_slips(claim_id,mime_type,content,sha256,uploaded_at) VALUES(?,?,?,?,?)", (claim_id, mime_type, slip, slip_hash, now()))
         event_id = self.audit(conn, user["id"], "payment_claim", claim_id, "submit", {"invoice_id": invoice_id})
         self.enqueue_notice(conn, event_id, "payment_claim_submitted")
         return Response(201, {"claim_id": claim_id, "status": "pending", "amount_satang": outstanding})
+
+    def _payment_slip(self, conn: sqlite3.Connection, claim_id: str) -> Response:
+        row = conn.execute("SELECT mime_type,content FROM payment_slips WHERE claim_id=?", (claim_id,)).fetchone()
+        if not row:
+            fail(404, "slip_not_found", "Payment slip not found")
+        return Response(200, {"mime_type": row["mime_type"],
+                              "slip_base64": base64.b64encode(row["content"]).decode("ascii")})
+
+    def _slip_qr_result(self, content: bytes) -> dict:
+        fingerprint = hashlib.sha256(content).hexdigest()
+        with self._slip_qr_cache_lock:
+            if fingerprint in self._slip_qr_cache:
+                self._slip_qr_cache.move_to_end(fingerprint)
+                return self._slip_qr_cache[fingerprint]
+        result = inspect_slip_qr(content)
+        with self._slip_qr_cache_lock:
+            self._slip_qr_cache[fingerprint] = result
+            self._slip_qr_cache.move_to_end(fingerprint)
+            if len(self._slip_qr_cache) > 64:
+                self._slip_qr_cache.popitem(last=False)
+        return result
+
+    def _claim_precheck(self, conn: sqlite3.Connection, claim: sqlite3.Row) -> dict:
+        """Check stored evidence and invoice consistency, never bank settlement."""
+        slip = conn.execute(
+            "SELECT mime_type,content,sha256 FROM payment_slips WHERE claim_id=?",
+            (claim["id"],),
+        ).fetchone()
+        slip_ok = bool(slip and slip["content"] and
+                       hmac.compare_digest(hashlib.sha256(slip["content"]).hexdigest(), slip["sha256"]) and
+                       valid_payment_image(slip["content"], slip["mime_type"]))
+        reference_ok = bool(slip_ok and claim["reference"] ==
+                            "SLIP-" + slip["sha256"][:32].upper())
+        duplicate = bool(conn.execute(
+            "SELECT 1 FROM payment_claims WHERE id!=? AND reference=? COLLATE NOCASE LIMIT 1",
+            (claim["id"], claim["reference"]),
+        ).fetchone() or conn.execute(
+            "SELECT 1 FROM payments WHERE reference=? COLLATE NOCASE AND claim_id IS NOT ? LIMIT 1",
+            (claim["reference"], claim["id"]),
+        ).fetchone())
+        invoice = conn.execute(
+            "SELECT id,student_id,amount_satang,status FROM invoices WHERE id=?",
+            (claim["invoice_id"],),
+        ).fetchone()
+        invoice_ok = bool(invoice and invoice["student_id"] == claim["student_id"] and
+                          invoice["status"] not in {"void", "paid"})
+        remaining = (invoice["amount_satang"] - conn.execute(
+            "SELECT COALESCE(SUM(amount_satang),0) FROM payments WHERE invoice_id=?",
+            (claim["invoice_id"],),
+        ).fetchone()[0]) if invoice else 0
+        amount_ok = bool(invoice_ok and remaining > 0 and claim["amount_satang"] == remaining)
+        checks = [
+            ("slip_file", slip_ok, "ไฟล์สลิปเป็นรูปภาพที่อ่านได้และไม่ถูกแก้ไขหลังอัปโหลด"),
+            ("slip_reference", reference_ok, "รหัสอ้างอิงตรงกับไฟล์ที่แนบ"),
+            ("duplicate", not duplicate, "ไม่พบการใช้สลิปหรือรหัสอ้างอิงซ้ำ"),
+            ("invoice_owner", invoice_ok, "ใบแจ้งชำระเป็นของนักเรียนรายนี้และยังใช้งานได้"),
+            ("invoice_balance", amount_ok, "ยอดแจ้งชำระตรงกับยอดค้างปัจจุบัน"),
+        ]
+        passed = all(ok for _, ok, _ in checks)
+        qr = (self._slip_qr_result(slip["content"]) if slip_ok else
+              {"status": "unreadable", "payload_type": None, "checksum_valid": None,
+               "payload_fingerprint": None, "message": "ไฟล์สลิปไม่ผ่านการตรวจ จึงอ่าน QR ไม่ได้"})
+        rendered_checks = [{"code": code, "status": "passed" if ok else "failed", "message": message}
+                           for code, ok, message in checks]
+        rendered_checks.append({"code": "qr_code",
+                                "status": "passed" if qr["status"] == "decoded" else "warning",
+                                "message": qr["message"]})
+        return {
+            "status": "passed" if passed else "failed",
+            "checks": rendered_checks,
+            "qr": qr,
+            "message": ("ข้อมูลไฟล์และยอดค้างผ่านการตรวจเบื้องต้น แต่ยังต้องตรวจว่าเงินเข้าบัญชีธนาคารจริง"
+                        if passed else "ข้อมูลสลิปหรือใบแจ้งชำระไม่ตรง กรุณาตรวจรายการที่ไม่ผ่านก่อนอนุมัติ"),
+        }
+
+    def _payment_claim_verification(self, conn: sqlite3.Connection, claim_id: str) -> Response:
+        claim = conn.execute("SELECT * FROM payment_claims WHERE id=?", (claim_id,)).fetchone()
+        if not claim:
+            fail(404, "claim_not_found", "Payment claim not found")
+        precheck = self._claim_precheck(conn, claim)
+        review = conn.execute(
+            "SELECT v.verdict,v.note,v.reviewed_at,u.name reviewer_name "
+            "FROM payment_claim_verifications v JOIN users u ON u.id=v.reviewed_by "
+            "WHERE v.claim_id=?", (claim_id,),
+        ).fetchone()
+        verification = {"status": review["verdict"] if review else "needs_review",
+                        "note": review["note"] if review else None,
+                        "reviewed_at": review["reviewed_at"] if review else None,
+                        "reviewer_name": review["reviewer_name"] if review else None}
+        return Response(200, {"claim_id": claim_id, "status": claim["status"],
+                              "precheck": precheck, "verification": verification,
+                              "can_approve": claim["status"] == "pending" and
+                              precheck["status"] == "passed" and verification["status"] == "correct"})
+
+    def _set_payment_claim_verification(self, conn: sqlite3.Connection, user: sqlite3.Row,
+                                        claim_id: str, data: dict) -> Response:
+        claim = conn.execute("SELECT * FROM payment_claims WHERE id=? AND status='pending'", (claim_id,)).fetchone()
+        if not claim:
+            fail(404, "claim_not_pending", "Pending payment claim not found")
+        verdict = data.get("verdict")
+        if verdict not in {"correct", "incorrect"}:
+            fail(400, "invalid_verdict", "Choose correct or incorrect")
+        note = (optional_str(data, "note", 250) if verdict == "correct" else
+                required_str(data, "note", 250))
+        if note and any(ord(char) < 32 and char not in "\n\t" for char in note):
+            fail(400, "invalid_note", "Review note contains invalid characters")
+        precheck = self._claim_precheck(conn, claim)
+        if verdict == "correct":
+            if precheck["status"] != "passed":
+                fail(409, "slip_precheck_failed", "Resolve the failed slip checks before marking correct")
+            if data.get("bank_confirmed") is not True:
+                fail(400, "bank_confirmation_required", "Confirm the bank credit independently before marking correct")
+        checked_at = now()
+        conn.execute(
+            "INSERT INTO payment_claim_verifications(claim_id,verdict,note,reviewed_by,reviewed_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(claim_id) DO UPDATE SET "
+            "verdict=excluded.verdict,note=excluded.note,reviewed_by=excluded.reviewed_by,"
+            "reviewed_at=excluded.reviewed_at",
+            (claim_id, verdict, note, user["id"], checked_at),
+        )
+        self.audit(conn, user["id"], "payment_claim", claim_id, "verify_slip",
+                   {"verdict": verdict, "precheck_status": precheck["status"]})
+        return self._payment_claim_verification(conn, claim_id)
 
     def _teacher_dashboard(self, conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
         rows = conn.execute("SELECT s.id,s.room_name,s.starts_at,s.ends_at,s.status,c.id course_id,c.course_code,c.title,c.subject,c.level,t.id time_entry_id,t.status time_status,t.actual_start,t.actual_end,t.amount_satang,t.rejection_reason,CASE WHEN s.status='scheduled' AND s.starts_at>? AND t.id IS NULL AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id) THEN 1 ELSE 0 END can_cancel FROM class_sessions s JOIN courses c ON c.id=s.course_id LEFT JOIN time_entries t ON t.session_id=s.id WHERE s.teacher_id=? ORDER BY s.starts_at DESC LIMIT 200", (now(), user["id"])).fetchall()
@@ -1492,6 +2283,15 @@ class PhysicsPlusApp:
             fail(400, "invalid_time", "Teaching time must be in the past, 10 minutes to 8 hours, with a shorter break")
         if abs(start - session["starts_at"]) > 24 * 3600:
             fail(400, "invalid_time", "Teaching time must be within 24 hours of the scheduled session")
+        if conn.execute("SELECT 1 FROM course_formats WHERE course_id=?", (session["course_id"],)).fetchone():
+            if conn.execute(
+                "SELECT 1 FROM individual_monthly_invoices m "
+                "JOIN enrollments e ON e.id=m.enrollment_id "
+                "JOIN session_students ss ON ss.student_id=e.student_id "
+                "WHERE ss.session_id=? AND e.course_id=? AND m.period=? LIMIT 1",
+                (session_id, session["course_id"], bangkok_month(start)),
+            ).fetchone():
+                fail(409, "billing_period_closed", "This student's monthly tuition bill is already issued")
         clash = conn.execute("SELECT 1 FROM time_entries WHERE teacher_id=? AND status IN ('submitted','approved','payroll_locked','paid') AND actual_start<? AND actual_end>? LIMIT 1", (user["id"], end, start)).fetchone()
         if clash:
             fail(409, "overlapping_time", "This time overlaps another teaching entry")
@@ -1547,14 +2347,162 @@ class PhysicsPlusApp:
         self.audit(conn, user["id"], "attendance", session_id, "record", {"count": len(records)})
         return Response(200, {"ok": True, "recorded": len(records)})
 
+    @staticmethod
+    def _individual_billing_data(conn: sqlite3.Connection, period: str | None) -> dict:
+        if not isinstance(period, str) or not MONTH_RE.fullmatch(period):
+            fail(400, "invalid_period", "Use a YYYY-MM billing period")
+        try:
+            month_start = datetime.strptime(period, "%Y-%m").replace(tzinfo=BANGKOK)
+        except ValueError:
+            fail(400, "invalid_period", "Use a real YYYY-MM billing period")
+        if month_start.year < 2000 or month_start.year > 9998:
+            fail(400, "invalid_period", "Billing period is outside the supported range")
+        next_month = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        start, end = int(month_start.timestamp()), int(next_month.timestamp())
+        completed = end <= now()
+        rows = conn.execute(
+            "SELECT e.id enrollment_id,e.student_id,u.name student_name,c.title course_title,"
+            "s.id session_id,t.id time_entry_id,t.status time_status,t.payable_minutes,"
+            "a.status attendance_status,b.invoice_id line_invoice_id,m.invoice_id monthly_invoice_id,"
+            "legacy.id legacy_invoice_id "
+            "FROM class_sessions s JOIN course_formats f ON f.course_id=s.course_id "
+            "JOIN session_students ss ON ss.session_id=s.id "
+            "JOIN enrollments e ON e.course_id=s.course_id AND e.student_id=ss.student_id "
+            "JOIN users u ON u.id=e.student_id JOIN courses c ON c.id=s.course_id "
+            "LEFT JOIN time_entries t ON t.session_id=s.id "
+            "LEFT JOIN attendance a ON a.session_id=s.id AND a.student_id=ss.student_id "
+            "LEFT JOIN individual_billing_lines b ON b.time_entry_id=t.id AND b.student_id=ss.student_id "
+            "LEFT JOIN individual_monthly_invoices m ON m.enrollment_id=e.id AND m.period=? "
+            "LEFT JOIN invoices legacy ON legacy.enrollment_id=e.id AND legacy.status!='void' "
+            "WHERE s.status='scheduled' AND COALESCE(t.actual_start,s.starts_at)>=? "
+            "AND COALESCE(t.actual_start,s.starts_at)<? "
+            "ORDER BY u.name,c.title,s.starts_at,s.id",
+            (period, start, end),
+        ).fetchall()
+        items: dict[str, dict] = {}
+        blockers: list[dict] = []
+        for row in rows:
+            enrollment_id = row["enrollment_id"]
+            item = items.setdefault(enrollment_id, {
+                "enrollment_id": enrollment_id, "student_id": row["student_id"],
+                "student_name": row["student_name"], "course_title": row["course_title"],
+                "minutes": 0, "amount_satang": 0, "session_count": 0,
+                "already_issued": bool(row["monthly_invoice_id"]),
+                "invoice_id": row["monthly_invoice_id"], "unbilled_minutes": 0,
+            })
+            if row["legacy_invoice_id"]:
+                blockers.append({"session_id": row["session_id"], "reason": "legacy_prepaid_invoice",
+                                 "message": "พบใบแจ้งยอดเดิมของคอร์สนี้ กรุณาตรวจสอบก่อนออกบิลรายเดือน"})
+                continue
+            if row["time_status"] not in {"approved", "payroll_locked", "paid"}:
+                blockers.append({"session_id": row["session_id"], "reason": "teaching_not_approved",
+                                 "message": "ยังไม่อนุมัติเวลาสอนของคาบตัวต่อตัว"})
+                continue
+            if row["attendance_status"] not in {"present", "absent"}:
+                blockers.append({"session_id": row["session_id"], "reason": "attendance_incomplete",
+                                 "message": "ยังไม่บันทึกการเข้าเรียนของคาบตัวต่อตัว"})
+                continue
+            if row["attendance_status"] == "absent":
+                continue
+            minutes = row["payable_minutes"]
+            if not isinstance(minutes, int) or minutes <= 0:
+                blockers.append({"session_id": row["session_id"], "reason": "invalid_teaching_minutes",
+                                 "message": "เวลาสอนจริงที่อนุมัติไม่ถูกต้อง"})
+                continue
+            if row["line_invoice_id"] and row["line_invoice_id"] != row["monthly_invoice_id"]:
+                blockers.append({"session_id": row["session_id"], "reason": "billing_record_mismatch",
+                                 "message": "รายการเรียกเก็บไม่ตรงกับบิลรายเดือน"})
+                continue
+            item["minutes"] += minutes
+            item["amount_satang"] += minutes * (INDIVIDUAL_TUITION_SATANG_PER_HOUR // 60)
+            item["session_count"] += 1
+            if not row["line_invoice_id"]:
+                item["unbilled_minutes"] += minutes
+        for item in items.values():
+            if item["already_issued"] and item["unbilled_minutes"]:
+                blockers.append({"session_id": None, "reason": "period_already_invoiced",
+                                 "message": "มีคาบเพิ่มหลังออกบิลเดือนนี้แล้ว กรุณาตรวจสอบก่อน"})
+        if not completed:
+            blockers.insert(0, {"session_id": None, "reason": "month_not_complete",
+                                "message": "ออกบิลคอร์สตัวต่อตัวได้หลังสิ้นเดือนเท่านั้น"})
+        ordered = sorted(items.values(), key=lambda item: (item["student_name"], item["course_title"]))
+        return {"period": period, "rate_satang_per_hour": INDIVIDUAL_TUITION_SATANG_PER_HOUR,
+                "ready": not blockers, "blockers": blockers, "items": ordered,
+                "total_satang": sum(item["amount_satang"] for item in ordered if not item["already_issued"])}
+
+    def _individual_billing_preview(self, conn: sqlite3.Connection, period: str | None) -> Response:
+        return Response(200, self._individual_billing_data(conn, period))
+
+    def _issue_individual_billing(self, conn: sqlite3.Connection, actor: sqlite3.Row, data: dict) -> Response:
+        preview = self._individual_billing_data(conn, data.get("period"))
+        if not preview["ready"]:
+            fail(409, "individual_billing_not_ready", "Resolve all teaching and attendance records after the month ends")
+        issued = []
+        due_date = (datetime.now(BANGKOK).date() + timedelta(days=7)).isoformat()
+        month_start = datetime.strptime(preview["period"], "%Y-%m").replace(tzinfo=BANGKOK)
+        month_end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        for item in preview["items"]:
+            if item["already_issued"] or not item["unbilled_minutes"]:
+                continue
+            # The invoice and every source time entry are persisted in the
+            # request transaction, so a retry cannot charge the same lesson.
+            lines = conn.execute(
+                "SELECT t.id,t.payable_minutes FROM time_entries t "
+                "JOIN class_sessions s ON s.id=t.session_id "
+                "JOIN session_students ss ON ss.session_id=s.id "
+                "JOIN attendance a ON a.session_id=s.id AND a.student_id=ss.student_id "
+                "LEFT JOIN individual_billing_lines b ON b.time_entry_id=t.id AND b.student_id=ss.student_id "
+                "WHERE ss.student_id=? AND a.status='present' AND s.status='scheduled' "
+                "AND t.status IN ('approved','payroll_locked','paid') AND b.time_entry_id IS NULL "
+                "AND s.course_id=(SELECT course_id FROM enrollments WHERE id=?) "
+                "AND t.actual_start>=? AND t.actual_start<? ORDER BY t.actual_start,t.id",
+                (item["student_id"], item["enrollment_id"],
+                 int(month_start.timestamp()), int(month_end.timestamp())),
+            ).fetchall()
+            minutes = sum(line["payable_minutes"] for line in lines)
+            if minutes != item["unbilled_minutes"]:
+                fail(409, "billing_changed", "Teaching records changed; refresh the monthly summary")
+            amount = minutes * (INDIVIDUAL_TUITION_SATANG_PER_HOUR // 60)
+            invoice_id = uid()
+            invoice_number = "PP-" + datetime.now(BANGKOK).strftime("%Y%m%d") + "-" + invoice_id[:8].upper()
+            description = f"{item['course_title']} เดือน {preview['period']} · {minutes} นาที × 5 บาท/นาที"
+            conn.execute(
+                "INSERT INTO invoices(id,invoice_number,student_id,description,amount_satang,due_date,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (invoice_id, invoice_number, item["student_id"], description, amount, due_date, now()),
+            )
+            conn.execute(
+                "INSERT INTO individual_monthly_invoices(invoice_id,enrollment_id,period,rate_satang_per_hour) "
+                "VALUES(?,?,?,?)",
+                (invoice_id, item["enrollment_id"], preview["period"], INDIVIDUAL_TUITION_SATANG_PER_HOUR),
+            )
+            conn.executemany(
+                "INSERT INTO individual_billing_lines(time_entry_id,student_id,invoice_id,minutes,amount_satang) "
+                "VALUES(?,?,?,?,?)",
+                [(line["id"], item["student_id"], invoice_id, line["payable_minutes"],
+                  line["payable_minutes"] * (INDIVIDUAL_TUITION_SATANG_PER_HOUR // 60)) for line in lines],
+            )
+            event_id = self.audit(conn, actor["id"], "invoice", invoice_id, "individual_monthly_create",
+                                  {"period": preview["period"], "enrollment_id": item["enrollment_id"],
+                                   "minutes": minutes, "amount_satang": amount})
+            self.enqueue_notice(conn, event_id, "invoice_created", item["student_id"])
+            issued.append({"invoice_id": invoice_id, "invoice_number": invoice_number,
+                           "enrollment_id": item["enrollment_id"], "student_id": item["student_id"],
+                           "minutes": minutes, "amount_satang": amount})
+        return Response(200, {"period": preview["period"], "issued": issued,
+                              "total_satang": sum(row["amount_satang"] for row in issued)})
+
     def _admin_invoices(self, conn: sqlite3.Connection) -> Response:
         invoices = conn.execute(
-            "SELECT i.id,i.invoice_number,i.enrollment_id,i.student_id,u.name student_name,"
-            "u.email student_email,c.title course_title,i.description,i.amount_satang,"
+            "SELECT i.id,i.invoice_number,COALESCE(i.enrollment_id,m.enrollment_id) enrollment_id,"
+            "i.student_id,u.name student_name,u.email student_email,c.title course_title,"
+            "i.description,i.amount_satang,m.period individual_period,"
+            "COALESCE((SELECT SUM(b.minutes) FROM individual_billing_lines b WHERE b.invoice_id=i.id),0) individual_minutes,"
             "i.status,i.due_date,i.created_at,"
             "COALESCE((SELECT SUM(p.amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang "
             "FROM invoices i JOIN users u ON u.id=i.student_id "
-            "LEFT JOIN enrollments e ON e.id=i.enrollment_id "
+            "LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id "
+            "LEFT JOIN enrollments e ON e.id=COALESCE(i.enrollment_id,m.enrollment_id) "
             "LEFT JOIN courses c ON c.id=e.course_id ORDER BY i.created_at DESC,i.id DESC LIMIT 500"
         ).fetchall()
         enrollments = conn.execute(
@@ -1563,6 +2511,7 @@ class PhysicsPlusApp:
             "FROM enrollments e JOIN users u ON u.id=e.student_id "
             "JOIN courses c ON c.id=e.course_id LEFT JOIN invoices i ON i.enrollment_id=e.id "
             "WHERE e.status='active' AND i.id IS NULL "
+            "AND NOT EXISTS(SELECT 1 FROM course_formats f WHERE f.course_id=c.id) "
             "ORDER BY e.created_at DESC,e.id DESC LIMIT 500"
         ).fetchall()
         receipts = conn.execute(
@@ -1584,12 +2533,15 @@ class PhysicsPlusApp:
         except ValueError:
             fail(400, "invalid_due_date", "Use a valid YYYY-MM-DD due date")
         enrollment = conn.execute(
-            "SELECT e.id,e.student_id,c.title FROM enrollments e "
-            "JOIN courses c ON c.id=e.course_id WHERE e.id=? AND e.status='active'",
+            "SELECT e.id,e.student_id,c.title,f.course_id individual_course_id FROM enrollments e "
+            "JOIN courses c ON c.id=e.course_id "
+            "LEFT JOIN course_formats f ON f.course_id=c.id WHERE e.id=? AND e.status='active'",
             (enrollment_id,),
         ).fetchone()
         if not enrollment:
             fail(404, "enrollment_not_found", "Active enrollment not found")
+        if enrollment["individual_course_id"]:
+            fail(409, "individual_monthly_only", "Individual tuition is billed after approved teaching time each month")
         if conn.execute("SELECT 1 FROM invoices WHERE enrollment_id=?", (enrollment_id,)).fetchone():
             fail(409, "invoice_exists", "This enrollment already has an invoice")
         description = optional_str(data, "description", 250) or enrollment["title"]
@@ -1610,6 +2562,10 @@ class PhysicsPlusApp:
         invoice = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
         if not invoice:
             fail(404, "invoice_not_found", "Invoice not found")
+        if action in {"amount", "void", "restore"} and conn.execute(
+            "SELECT 1 FROM individual_monthly_invoices WHERE invoice_id=?", (invoice_id,)
+        ).fetchone():
+            fail(409, "monthly_invoice_locked", "Monthly individual tuition cannot be edited or voided")
         if action == "restore":
             if invoice["status"] != "void" or conn.execute("SELECT 1 FROM payments WHERE invoice_id=?", (invoice_id,)).fetchone():
                 fail(409, "invoice_locked", "Only a void invoice without payments can be restored")
@@ -1673,15 +2629,19 @@ class PhysicsPlusApp:
         args: tuple = ()
         if student_id:
             criterion = " WHERE EXISTS(SELECT 1 FROM session_students mine WHERE mine.session_id=s.id AND mine.student_id=?)"
-            args = (student_id,)
+            args = (student_id, student_id)
         elif teacher_id:
             criterion = " WHERE s.teacher_id=?"
             args = (teacher_id,)
         rows = conn.execute(
             "SELECT s.id,s.room_name,s.course_id,c.title course_title,c.course_code,c.subject_code,"
             "s.teacher_id,u.name teacher_name,u.public_code teacher_code,s.starts_at,s.ends_at,s.status,"
+            "t.status time_status,"
+            + ("a.status student_attendance," if student_id else "NULL student_attendance,") +
             "(SELECT COUNT(*) FROM session_students ss WHERE ss.session_id=s.id) roster_count "
             "FROM class_sessions s JOIN courses c ON c.id=s.course_id JOIN users u ON u.id=s.teacher_id"
+            " LEFT JOIN time_entries t ON t.session_id=s.id"
+            + (" LEFT JOIN attendance a ON a.session_id=s.id AND a.student_id=?" if student_id else "")
             + criterion + " ORDER BY s.starts_at DESC,s.id", args
         ).fetchall()
         classes = [dict(row) for row in rows]
@@ -1738,10 +2698,15 @@ class PhysicsPlusApp:
 
     def _admin_academic(self, conn: sqlite3.Connection) -> Response:
         courses = conn.execute(
-            "SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,c.price_satang,"
+            "SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,"
+            "CASE WHEN f.course_id IS NULL THEN c.price_satang ELSE 30000 END price_satang,"
             "c.teacher_id,u.name teacher_name,u.public_code teacher_code,c.capacity,c.active,c.created_at,"
+            "CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format,"
+            "COALESCE(p.target_sessions,12) target_sessions,"
             "(SELECT COUNT(*) FROM enrollments e WHERE e.course_id=c.id AND e.status='active') enrolled_count "
-            "FROM courses c LEFT JOIN users u ON u.id=c.teacher_id ORDER BY c.created_at DESC,c.id"
+            "FROM courses c LEFT JOIN users u ON u.id=c.teacher_id "
+            "LEFT JOIN course_formats f ON f.course_id=c.id "
+            "LEFT JOIN course_progress_targets p ON p.course_id=c.id ORDER BY c.created_at DESC,c.id"
         ).fetchall()
         enrollments = conn.execute(
             "SELECT e.id,e.student_id,u.name student_name,u.public_code student_code,e.course_id,"
@@ -1752,7 +2717,8 @@ class PhysicsPlusApp:
         catalog = [{"level": level, "subject": subject, "subject_code": code,
                     "title": f"{name} {'ม.ต้น' if level == 'middle' else 'ม.ปลาย'}"}
                    for (level, subject), (code, name) in COURSE_CATALOG.items()]
-        return Response(200, {"catalog": catalog, "users": self._admin_users(conn),
+        return Response(200, {"catalog": catalog, "rooms": list(ROOM_NAMES),
+                              "users": self._admin_users(conn),
                               "courses": [dict(row) for row in courses],
                               "classes": self._class_list(conn),
                               "enrollments": [dict(row) for row in enrollments]})
@@ -1762,19 +2728,20 @@ class PhysicsPlusApp:
         """One read for the first screen; detailed records remain in existing APIs."""
         today = datetime.now(BANGKOK).date().isoformat()
         row = conn.execute(
-            "WITH recent AS ("
+            "WITH invoice_totals AS ("
             "SELECT i.id,i.amount_satang,i.status,i.due_date,"
             "COALESCE((SELECT SUM(p.amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang "
-            "FROM invoices i ORDER BY i.created_at DESC,i.id DESC LIMIT 500) "
+            "FROM invoices i) "
             "SELECT "
-            "(SELECT COUNT(*) FROM recent) invoice_count,"
+            "(SELECT COUNT(*) FROM invoice_totals) invoice_count,"
             "(SELECT COALESCE(SUM(CASE WHEN amount_satang>paid_satang THEN amount_satang-paid_satang ELSE 0 END),0) "
-            "FROM recent WHERE status!='void') outstanding_satang,"
-            "(SELECT COUNT(*) FROM recent WHERE status!='void' AND due_date<? AND amount_satang>paid_satang) overdue_count,"
+            "FROM invoice_totals WHERE status!='void') outstanding_satang,"
+            "(SELECT COUNT(*) FROM invoice_totals WHERE status!='void' AND due_date<? AND amount_satang>paid_satang) overdue_count,"
             "(SELECT COUNT(*) FROM payment_claims WHERE status='pending') pending_claims,"
             "(SELECT COUNT(*) FROM time_entries WHERE status='submitted') pending_times,"
-            "(SELECT MIN(COUNT(*),500) FROM enrollments e WHERE e.status='active' AND NOT EXISTS"
-            "(SELECT 1 FROM invoices i WHERE i.enrollment_id=e.id)) unbilled_count,"
+            "(SELECT COUNT(*) FROM enrollments e WHERE e.status='active' "
+            "AND NOT EXISTS(SELECT 1 FROM course_formats f WHERE f.course_id=e.course_id) "
+            "AND NOT EXISTS(SELECT 1 FROM invoices i WHERE i.enrollment_id=e.id)) unbilled_count,"
             "(SELECT COUNT(*) FROM notification_outbox WHERE status='dead') failed_notices",
             (today,),
         ).fetchone()
@@ -1786,7 +2753,25 @@ class PhysicsPlusApp:
         # from /api/admin/invoices. Keep the original 100-row result for the
         # full API, but avoid its duplicate remote read in compact mode.
         invoices = [] if compact else conn.execute("SELECT i.id,i.invoice_number,i.amount_satang,i.status,i.due_date,u.name student_name,COALESCE((SELECT SUM(p.amount_satang) FROM payments p WHERE p.invoice_id=i.id),0) paid_satang FROM invoices i JOIN users u ON u.id=i.student_id ORDER BY i.created_at DESC LIMIT 100").fetchall()
-        claims = conn.execute("SELECT pc.id,pc.invoice_id,pc.amount_satang,pc.reference,pc.status,u.name student_name FROM payment_claims pc JOIN users u ON u.id=pc.student_id WHERE pc.status='pending' ORDER BY pc.created_at DESC").fetchall()
+        claims = conn.execute(
+            "SELECT pc.id,pc.invoice_id,pc.amount_satang,pc.reference,pc.status,"
+            "u.name student_name,u.public_code student_code,i.invoice_number,"
+            "c.title course_title,c.course_code,"
+            "COALESCE(v.verdict,'needs_review') verification_status,"
+            "CASE WHEN ps.claim_id IS NOT NULL AND pc.reference=('SLIP-'||upper(substr(ps.sha256,1,32))) "
+            "AND i.student_id=pc.student_id "
+            "AND i.status NOT IN ('paid','void') AND pc.amount_satang>0 "
+            "AND pc.amount_satang=i.amount_satang-(SELECT COALESCE(SUM(p.amount_satang),0) "
+            "FROM payments p WHERE p.invoice_id=i.id) THEN 'passed' ELSE 'failed' END precheck_status "
+            "FROM payment_claims pc JOIN users u ON u.id=pc.student_id "
+            "JOIN invoices i ON i.id=pc.invoice_id "
+            "LEFT JOIN payment_slips ps ON ps.claim_id=pc.id "
+            "LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id "
+            "LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id "
+            "LEFT JOIN enrollments e ON e.id=COALESCE(i.enrollment_id,m.enrollment_id) "
+            "LEFT JOIN courses c ON c.id=e.course_id "
+            "WHERE pc.status='pending' ORDER BY pc.created_at DESC"
+        ).fetchall()
         shared = {"pending_time_entries": [dict(r) for r in pending], "invoices": [dict(r) for r in invoices],
                   "pending_payment_claims": [dict(r) for r in claims], "notifications": self._notification_status(conn)}
         if compact:
@@ -1808,10 +2793,22 @@ class PhysicsPlusApp:
         ).fetchone()[0]
         claims = conn.execute(
             "SELECT pc.id,pc.invoice_id,i.invoice_number,pc.amount_satang,"
-            "pc.reference,pc.status,pc.created_at,u.name student_name "
+            "pc.reference,pc.status,pc.created_at,u.name student_name,"
+            "u.public_code student_code,c.title course_title,c.course_code,"
+            "COALESCE(v.verdict,'needs_review') verification_status,"
+            "CASE WHEN ps.claim_id IS NOT NULL AND pc.reference=('SLIP-'||upper(substr(ps.sha256,1,32))) "
+            "AND i.student_id=pc.student_id "
+            "AND i.status NOT IN ('paid','void') AND pc.amount_satang>0 "
+            "AND pc.amount_satang=i.amount_satang-(SELECT COALESCE(SUM(p.amount_satang),0) "
+            "FROM payments p WHERE p.invoice_id=i.id) THEN 'passed' ELSE 'failed' END precheck_status "
             "FROM payment_claims pc "
             "JOIN invoices i ON i.id=pc.invoice_id "
             "JOIN users u ON u.id=pc.student_id "
+            "LEFT JOIN payment_slips ps ON ps.claim_id=pc.id "
+            "LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id "
+            "LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id "
+            "LEFT JOIN enrollments e ON e.id=COALESCE(i.enrollment_id,m.enrollment_id) "
+            "LEFT JOIN courses c ON c.id=e.course_id "
             "WHERE pc.status='pending' "
             "ORDER BY pc.created_at DESC,pc.id DESC LIMIT 50"
         ).fetchall()
@@ -1876,6 +2873,7 @@ class PhysicsPlusApp:
 
         row = conn.execute(
             "SELECT SUM(CASE WHEN revision>synced_revision THEN 1 ELSE 0 END) pending,"
+            "MIN(CASE WHEN revision>synced_revision THEN updated_at END) oldest_pending_at,"
             "MAX(synced_at) last_success_at FROM sheet_sync_state"
         ).fetchone()
         error = conn.execute(
@@ -1886,6 +2884,9 @@ class PhysicsPlusApp:
             "configured": sheet_configured(),
             "sheet_url": sheet_url(),
             "pending": int(row["pending"] or 0),
+            "oldest_pending_at": iso(row["oldest_pending_at"]),
+            "pending_age_seconds": max(0, now() - int(row["oldest_pending_at"]))
+            if row["oldest_pending_at"] is not None else 0,
             "last_success_at": iso(row["last_success_at"]),
             "last_error_code": error["last_error_code"] if error else None,
         }
@@ -1899,17 +2900,19 @@ class PhysicsPlusApp:
         sql = {
             "students": "SELECT u.public_code student_code,u.id,u.name,u.email,u.status,p.grade,p.school,p.guardian_name,p.guardian_phone,p.guardian_relationship,u.created_at FROM users u LEFT JOIN student_profiles p ON p.user_id=u.id WHERE u.role='student' ORDER BY u.created_at,u.id",
             "teachers": "SELECT id,public_code teacher_code,name,email,status,created_at FROM users WHERE role='teacher' ORDER BY created_at,id",
-            "courses": "SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,c.price_satang,c.capacity,c.active,u.name teacher_name,u.public_code teacher_code,c.created_at FROM courses c LEFT JOIN users u ON u.id=c.teacher_id ORDER BY c.created_at,c.id",
+            "courses": "SELECT c.id,c.course_code,c.subject_code,c.title,c.subject,c.level,CASE WHEN f.course_id IS NULL THEN c.price_satang ELSE 30000 END price_satang,c.capacity,c.active,CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format,COALESCE(p.target_sessions,12) target_sessions,u.name teacher_name,u.public_code teacher_code,c.created_at FROM courses c LEFT JOIN users u ON u.id=c.teacher_id LEFT JOIN course_formats f ON f.course_id=c.id LEFT JOIN course_progress_targets p ON p.course_id=c.id ORDER BY c.created_at,c.id",
             "classes": "SELECT s.id,s.room_name,s.starts_at,s.ends_at,s.status,c.course_code,c.subject_code,c.title course_title,u.public_code teacher_code,u.name teacher_name,(SELECT COUNT(*) FROM session_students ss WHERE ss.session_id=s.id) roster_count,s.created_at FROM class_sessions s JOIN courses c ON c.id=s.course_id JOIN users u ON u.id=s.teacher_id ORDER BY s.starts_at,s.id",
             "class_rosters": "SELECT s.id class_id,s.room_name,c.course_code,c.title course_title,u.public_code student_code,u.name student_name,a.status attendance_status,s.starts_at,s.ends_at FROM session_students ss JOIN class_sessions s ON s.id=ss.session_id JOIN courses c ON c.id=s.course_id JOIN users u ON u.id=ss.student_id LEFT JOIN attendance a ON a.session_id=s.id AND a.student_id=u.id ORDER BY s.starts_at,s.id,u.name,u.id",
             "enrollments": "SELECT e.id,c.course_code,c.title course_title,u.public_code student_code,u.name student_name,u.email student_email,e.status,e.created_at FROM enrollments e JOIN courses c ON c.id=e.course_id JOIN users u ON u.id=e.student_id ORDER BY e.created_at,e.id",
-            "invoices": "SELECT i.id,i.invoice_number,u.name student_name,u.email student_email,i.description,i.amount_satang,i.status,i.due_date,i.created_at FROM invoices i JOIN users u ON u.id=i.student_id ORDER BY i.created_at,i.id",
+            "invoices": "SELECT i.id,i.invoice_number,u.name student_name,u.email student_email,i.description,i.amount_satang,m.period individual_period,COALESCE((SELECT SUM(b.minutes) FROM individual_billing_lines b WHERE b.invoice_id=i.id),0) individual_minutes,i.status,i.due_date,i.created_at FROM invoices i JOIN users u ON u.id=i.student_id LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id ORDER BY i.created_at,i.id",
             "payments": "SELECT p.id,i.invoice_number,p.amount_satang,p.method,p.reference,p.recorded_at FROM payments p JOIN invoices i ON i.id=p.invoice_id ORDER BY p.recorded_at,p.id",
             "receipts": "SELECT r.id,r.receipt_number,r.invoice_number,r.student_name,r.enrollment_id,r.course_code,r.course_title,r.description,r.amount_satang,r.method,r.reference,r.paid_at,r.issued_at FROM receipts r ORDER BY r.paid_at,r.id",
-            "claims": "SELECT pc.id,i.invoice_number,u.name student_name,pc.amount_satang,pc.reference,pc.status,pc.created_at,pc.reviewed_at FROM payment_claims pc JOIN invoices i ON i.id=pc.invoice_id JOIN users u ON u.id=pc.student_id ORDER BY pc.created_at,pc.id",
+            "claims": "SELECT pc.id,i.invoice_number,u.name student_name,pc.amount_satang,pc.reference,pc.status,pc.created_at,pc.reviewed_at,COALESCE(v.verdict,'needs_review') verification_status,v.note verification_note,v.reviewed_at verification_reviewed_at,reviewer.name verification_reviewer_name FROM payment_claims pc JOIN invoices i ON i.id=pc.invoice_id JOIN users u ON u.id=pc.student_id LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id LEFT JOIN users reviewer ON reviewer.id=v.reviewed_by ORDER BY pc.created_at,pc.id",
             "teaching": "SELECT t.id,u.name teacher_name,c.title course_title,t.actual_start,t.actual_end,t.break_minutes,t.payable_minutes,t.student_count,t.rate_satang_per_hour,t.amount_satang,t.status,t.submitted_at,t.reviewed_at FROM time_entries t JOIN users u ON u.id=t.teacher_id JOIN class_sessions s ON s.id=t.session_id JOIN courses c ON c.id=s.course_id ORDER BY t.submitted_at,t.id",
             "payroll": "SELECT p.id,u.name teacher_name,p.period,p.status,p.total_satang,p.finalized_at,p.paid_at,p.payment_reference,p.created_at FROM payroll_runs p JOIN users u ON u.id=p.teacher_id ORDER BY p.created_at,p.id",
             "rates": "SELECT id,teacher_label,subject,level,min_students,max_students,rate_satang_per_hour,effective_from,effective_to,state,source_note FROM rate_rules ORDER BY level,min_students,id",
+            "teacher_availability": "SELECT a.id,u.public_code teacher_code,u.name teacher_name,a.starts_at,a.ends_at,a.active,a.created_at FROM teacher_availability a JOIN users u ON u.id=a.teacher_id ORDER BY a.starts_at,a.id",
+            "assignments": "SELECT t.id,u.public_code assignee_code,u.name assignee_name,u.role assignee_role,c.course_code,c.title course_title,t.title,t.description,t.due_date,t.status,t.created_at,t.updated_at,t.completed_at FROM assignments t JOIN users u ON u.id=t.assignee_id LEFT JOIN courses c ON c.id=t.course_id ORDER BY t.created_at,t.id",
         }[dataset]
         rows = conn.execute(sql + " LIMIT 1001 OFFSET ?", ((page - 1) * 1000,)).fetchall()
         exported = [dict(row) for row in rows[:1000]]
@@ -2057,12 +3060,20 @@ class PhysicsPlusApp:
     def _create_course(self, conn: sqlite3.Connection, user: sqlite3.Row, data: dict) -> Response:
         subject = required_str(data, "subject", 40)
         level = required_str(data, "level", 10)
+        course_format = data.get("course_format", "group")
+        if course_format not in {"group", "individual"}:
+            fail(400, "invalid_course_format", "Choose group or individual tuition")
+        target_sessions = required_int(data, "target_sessions", 1, 200) if "target_sessions" in data else 12
         catalog = COURSE_CATALOG.get((level, subject))
         if catalog is None:
             fail(400, "invalid_subject", "Choose a subject offered at this level")
         subject_code, subject_name = catalog
         price = required_int(data, "price_satang", 1, 100_000_000_00)
+        if course_format == "individual" and price != INDIVIDUAL_TUITION_SATANG_PER_HOUR:
+            fail(400, "individual_rate_fixed", "Individual tuition is 300 baht per taught hour")
         title = f"{subject_name} {'ม.ต้น' if level == 'middle' else 'ม.ปลาย'}"
+        if course_format == "individual":
+            title += " · ตัวต่อตัว"
         teacher_id = data.get("teacher_id")
         if teacher_id is not None and (not isinstance(teacher_id, str) or
                                        not re.fullmatch(r"[0-9a-f]{32}", teacher_id)):
@@ -2071,36 +3082,140 @@ class PhysicsPlusApp:
         if teacher_id is not None and not eligible_teacher(conn, teacher_id):
             fail(400, "invalid_teacher", "Assign an active or pending roster teacher")
         course_id = uid()
-        course_code = next_public_code(conn, subject_code)
+        course_code = next_public_code(conn, subject_code + ("-ONE" if course_format == "individual" else ""))
         conn.execute("INSERT INTO courses(id,course_code,subject_code,title,subject,level,price_satang,teacher_id,capacity,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (course_id, course_code, subject_code, title, subject, level, price, teacher_id, capacity, now()))
+        if course_format == "individual":
+            conn.execute("INSERT INTO course_formats(course_id,format) VALUES(?,'individual')", (course_id,))
+        conn.execute("INSERT INTO course_progress_targets(course_id,target_sessions) VALUES(?,?)", (course_id, target_sessions))
         self.audit(conn, user["id"], "course", course_id, "create", {"teacher_id": teacher_id, "course_code": course_code})
-        return Response(201, {"course_id": course_id, "course_code": course_code, "subject_code": subject_code, "title": title, "price_satang": price})
+        return Response(201, {"course_id": course_id, "course_code": course_code, "subject_code": subject_code, "title": title, "price_satang": price, "course_format": course_format, "target_sessions": target_sessions})
 
     def _edit_course(self, conn: sqlite3.Connection, actor: sqlite3.Row, course_id: str, data: dict) -> Response:
         course = conn.execute("SELECT * FROM courses WHERE id=?", (course_id,)).fetchone()
         if not course:
             fail(404, "course_not_found", "Course not found")
-        if not data or set(data) - {"price_satang", "teacher_id", "capacity", "active"}:
-            fail(400, "invalid_input", "Only price, teacher, capacity and active status can be updated")
+        if not data or set(data) - {"price_satang", "teacher_id", "capacity", "active", "target_sessions"}:
+            fail(400, "invalid_input", "Only price, teacher, capacity, target sessions and active status can be updated")
         teacher_id = data.get("teacher_id", course["teacher_id"])
         if teacher_id is not None and (not isinstance(teacher_id, str) or
                                        not re.fullmatch(r"[0-9a-f]{32}", teacher_id) or
                                        not eligible_teacher(conn, teacher_id)):
             fail(400, "invalid_teacher", "Assign an active or pending roster teacher")
         price = required_int(data, "price_satang", 1, 100_000_000_00) if "price_satang" in data else course["price_satang"]
+        if conn.execute("SELECT 1 FROM course_formats WHERE course_id=?", (course_id,)).fetchone():
+            if "price_satang" in data and price != INDIVIDUAL_TUITION_SATANG_PER_HOUR:
+                fail(400, "individual_rate_fixed", "Individual tuition is 300 baht per taught hour")
+            price = INDIVIDUAL_TUITION_SATANG_PER_HOUR
         capacity = required_int(data, "capacity", 1, 100) if "capacity" in data else course["capacity"]
         enrolled = conn.execute("SELECT COUNT(*) FROM enrollments WHERE course_id=? AND status='active'", (course_id,)).fetchone()[0]
         if capacity < enrolled:
             fail(409, "capacity_below_enrollment", "Capacity cannot be less than active enrollments")
         active = data.get("active", bool(course["active"]))
+        target_sessions = required_int(data, "target_sessions", 1, 200) if "target_sessions" in data else None
         if not isinstance(active, bool):
             fail(400, "invalid_input", "active must be true or false")
         catalog = COURSE_CATALOG.get((course["level"], course["subject"]))
         if active and catalog is None:
             fail(409, "legacy_course_subject", "This historical subject is no longer offered")
         conn.execute("UPDATE courses SET price_satang=?,teacher_id=?,capacity=?,active=? WHERE id=?", (price, teacher_id, capacity, int(active), course_id))
+        if target_sessions is not None:
+            conn.execute("INSERT INTO course_progress_targets(course_id,target_sessions) VALUES(?,?) "
+                         "ON CONFLICT(course_id) DO UPDATE SET target_sessions=excluded.target_sessions",
+                         (course_id, target_sessions))
         self.audit(conn, actor["id"], "course", course_id, "update", {"old_price_satang": course["price_satang"], "price_satang": price, "teacher_id": teacher_id, "capacity": capacity, "active": active})
         return Response(200, {"course_id": course_id, "course_code": course["course_code"], "price_satang": price, "teacher_id": teacher_id, "capacity": capacity, "active": active})
+
+    @staticmethod
+    def _teacher_availability(conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
+        rows = conn.execute(
+            "SELECT a.id,a.teacher_id,u.name teacher_name,u.public_code teacher_code,"
+            "a.starts_at,a.ends_at,a.created_at,"
+            "EXISTS(SELECT 1 FROM class_sessions s WHERE s.teacher_id=a.teacher_id "
+            "AND s.status='scheduled' AND s.starts_at<a.ends_at AND s.ends_at>a.starts_at) booked "
+            "FROM teacher_availability a JOIN users u ON u.id=a.teacher_id "
+            "WHERE a.active=1 AND a.ends_at>? AND a.starts_at<? "
+            "ORDER BY a.starts_at,a.teacher_id LIMIT 300",
+            (now(), now() + 180 * 86400),
+        ).fetchall()
+        if user["role"] == "admin":
+            return Response(200, {"slots": [dict(row) for row in rows]})
+
+        own_slots = [dict(row) for row in rows if user["role"] == "student"
+                     or row["teacher_id"] == user["id"]]
+        if not own_slots:
+            return Response(200, {"slots": []})
+        teacher_ids = sorted({slot["teacher_id"] for slot in own_slots})
+        marks = ",".join("?" for _ in teacher_ids)
+        busy_rows = conn.execute(
+            "SELECT teacher_id,starts_at,ends_at FROM class_sessions "
+            "WHERE status='scheduled' AND starts_at<? AND ends_at>? "
+            f"AND teacher_id IN ({marks}) ORDER BY teacher_id,starts_at,ends_at",
+            (max(slot["ends_at"] for slot in own_slots),
+             min(slot["starts_at"] for slot in own_slots), *teacher_ids),
+        ).fetchall()
+        busy_by_teacher: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for booked in busy_rows:
+            busy_by_teacher[booked["teacher_id"]].append(booked)
+
+        # A booking may occupy only part of an advertised slot. Show the
+        # remaining bookable minutes, even if a different class uses the rest.
+        visible = []
+        for slot in own_slots:
+            cursor = slot["starts_at"]
+            for booked in busy_by_teacher[slot["teacher_id"]]:
+                if booked["ends_at"] <= cursor or booked["starts_at"] >= slot["ends_at"]:
+                    continue
+                free_end = min(booked["starts_at"], slot["ends_at"])
+                if free_end - cursor >= 10 * 60:
+                    visible.append({**slot, "starts_at": cursor,
+                                    "ends_at": free_end, "booked": False})
+                cursor = max(cursor, booked["ends_at"])
+                if cursor >= slot["ends_at"]:
+                    break
+            if slot["ends_at"] - cursor >= 10 * 60:
+                visible.append({**slot, "starts_at": cursor,
+                                "ends_at": slot["ends_at"], "booked": False})
+        return Response(200, {"slots": visible})
+
+    def _create_teacher_availability(self, conn: sqlite3.Connection, user: sqlite3.Row, data: dict) -> Response:
+        teacher_id = required_str(data, "teacher_id", 32)
+        if not eligible_teacher(conn, teacher_id):
+            fail(400, "invalid_teacher", "Select a teacher from the roster")
+        start = parse_datetime(required_str(data, "starts_at", 50))
+        end = parse_datetime(required_str(data, "ends_at", 50))
+        if start <= now() or start > now() + 180 * 86400 or not 30 * 60 <= end - start <= 8 * 3600:
+            fail(400, "invalid_time", "Add a future slot between 30 minutes and 8 hours")
+        if conn.execute(
+            "SELECT 1 FROM teacher_availability WHERE teacher_id=? AND active=1 "
+            "AND starts_at<? AND ends_at>? LIMIT 1", (teacher_id, end, start)
+        ).fetchone():
+            fail(409, "availability_overlap", "This teacher already has an overlapping free slot")
+        if conn.execute(
+            "SELECT 1 FROM class_sessions WHERE teacher_id=? AND status='scheduled' "
+            "AND starts_at<? AND ends_at>? LIMIT 1", (teacher_id, end, start)
+        ).fetchone():
+            fail(409, "teacher_booked", "This teacher already has a class in that period")
+        slot_id = uid()
+        conn.execute(
+            "INSERT INTO teacher_availability(id,teacher_id,starts_at,ends_at,created_by,created_at) "
+            "VALUES(?,?,?,?,?,?)", (slot_id, teacher_id, start, end, user["id"], now()),
+        )
+        self.audit(conn, user["id"], "teacher_availability", slot_id, "create", {"teacher_id": teacher_id})
+        return Response(201, {"slot_id": slot_id, "teacher_id": teacher_id, "starts_at": start, "ends_at": end})
+
+    def _cancel_teacher_availability(self, conn: sqlite3.Connection, user: sqlite3.Row, slot_id: str) -> Response:
+        slot = conn.execute("SELECT * FROM teacher_availability WHERE id=? AND active=1", (slot_id,)).fetchone()
+        if not slot:
+            fail(404, "availability_not_found", "Free slot not found")
+        if conn.execute(
+            "SELECT 1 FROM class_sessions WHERE teacher_id=? AND status='scheduled' "
+            "AND starts_at<? AND ends_at>? LIMIT 1",
+            (slot["teacher_id"], slot["ends_at"], slot["starts_at"]),
+        ).fetchone():
+            fail(409, "availability_booked", "Move or cancel the assigned class first")
+        conn.execute("UPDATE teacher_availability SET active=0 WHERE id=?", (slot_id,))
+        self.audit(conn, user["id"], "teacher_availability", slot_id, "cancel")
+        return Response(200, {"slot_id": slot_id, "active": False})
 
     def _admin_enroll(self, conn: sqlite3.Connection, actor: sqlite3.Row, data: dict) -> Response:
         course_id = required_str(data, "course_id", 32)
@@ -2120,7 +3235,10 @@ class PhysicsPlusApp:
         conn.execute("INSERT INTO enrollments(id,course_id,student_id,created_at) VALUES(?,?,?,?)", (enrollment_id, course_id, student_id, now()))
         event_id = self.audit(conn, actor["id"], "enrollment", enrollment_id, "admin_create", {"course_id": course_id})
         self.enqueue_notice(conn, event_id, "student_enrollment_updated", student_id)
-        return Response(201, {"enrollment_id": enrollment_id, "status": "awaiting_invoice"})
+        individual = bool(conn.execute("SELECT 1 FROM course_formats WHERE course_id=?", (course_id,)).fetchone())
+        return Response(201, {"enrollment_id": enrollment_id,
+                              "status": "awaiting_monthly_billing" if individual else "awaiting_invoice",
+                              "rate_satang_per_hour": INDIVIDUAL_TUITION_SATANG_PER_HOUR if individual else None})
 
     def _manage_enrollment(self, conn: sqlite3.Connection, actor: sqlite3.Row, enrollment_id: str, action: str) -> Response:
         row = conn.execute("SELECT e.*,c.capacity,c.active course_active FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.id=?", (enrollment_id,)).fetchone()
@@ -2158,7 +3276,7 @@ class PhysicsPlusApp:
 
     def _validated_class_input(self, conn: sqlite3.Connection, data: dict, existing_id: str | None) -> tuple:
         course_id = required_str(data, "course_id", 32)
-        course = conn.execute("SELECT id,capacity,level FROM courses WHERE id=? AND active=1", (course_id,)).fetchone()
+        course = conn.execute("SELECT c.id,c.capacity,c.level,f.format course_format FROM courses c LEFT JOIN course_formats f ON f.course_id=c.id WHERE c.id=? AND c.active=1", (course_id,)).fetchone()
         if not course:
             fail(404, "course_not_found", "Active course is required")
         room_name = " ".join(required_str(data, "room_name", 80).split())
@@ -2174,6 +3292,14 @@ class PhysicsPlusApp:
         student_ids = data.get("student_ids")
         if not isinstance(student_ids, list) or len(student_ids) > course["capacity"] or len(student_ids) > 13:
             fail(400, "invalid_roster", "Choose at most 13 students per class for the approved wage grid")
+        if course["course_format"] == "individual" and len(student_ids) != 1:
+            fail(400, "individual_roster", "Individual classes require exactly one student")
+        if course["course_format"] == "individual" and student_ids and conn.execute(
+            "SELECT 1 FROM individual_monthly_invoices m JOIN enrollments e ON e.id=m.enrollment_id "
+            "WHERE e.course_id=? AND e.student_id=? AND m.period=? LIMIT 1",
+            (course_id, student_ids[0], bangkok_month(start)),
+        ).fetchone():
+            fail(409, "billing_period_closed", "This student's monthly tuition bill is already issued")
         if any(not isinstance(sid, str) or not re.fullmatch(r"[0-9a-f]{32}", sid) for sid in student_ids) or len(set(student_ids)) != len(student_ids):
             fail(400, "invalid_roster", "Student IDs must be unique and valid")
         if student_ids:
@@ -2195,6 +3321,11 @@ class PhysicsPlusApp:
         ).fetchone()
         if conflict:
             fail(409, "class_time_conflict", "Teacher or room is already booked at that time")
+        if course["course_format"] == "individual" and not conn.execute(
+            "SELECT 1 FROM teacher_availability WHERE teacher_id=? AND active=1 "
+            "AND starts_at<=? AND ends_at>=? LIMIT 1", (teacher_id, start, end)
+        ).fetchone():
+            fail(409, "teacher_unavailable", "Add a free teacher slot that covers this individual class")
         if student_ids:
             marks = ",".join("?" for _ in student_ids)
             conflict = conn.execute(
@@ -2473,10 +3604,15 @@ class PhysicsPlusApp:
         paid_at = now()
         conn.execute("INSERT INTO payments(id,invoice_id,amount_satang,method,reference,claim_id,recorded_by,recorded_at) VALUES(?,?,?,?,?,?,?,?)", (payment_id, invoice_id, amount, method, reference, claim_id, user["id"], paid_at))
         student = conn.execute("SELECT name FROM users WHERE id=?", (invoice["student_id"],)).fetchone()
+        monthly = conn.execute(
+            "SELECT enrollment_id FROM individual_monthly_invoices WHERE invoice_id=?",
+            (invoice_id,),
+        ).fetchone()
+        enrollment_id = invoice["enrollment_id"] or (monthly["enrollment_id"] if monthly else None)
         course = conn.execute(
             "SELECT c.course_code,c.title FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.id=?",
-            (invoice["enrollment_id"],),
-        ).fetchone() if invoice["enrollment_id"] else None
+            (enrollment_id,),
+        ).fetchone() if enrollment_id else None
         document_id = uid()
         document_number = receipt_number(payment_id, paid_at)
         conn.execute(
@@ -2486,7 +3622,7 @@ class PhysicsPlusApp:
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (document_id, payment_id, document_number, invoice_id, invoice["invoice_number"],
              invoice["student_id"], student["name"], invoice["description"],
-             invoice["enrollment_id"], course["course_code"] if course else None,
+             enrollment_id, course["course_code"] if course else None,
              course["title"] if course else None, amount,
              method, reference, paid_at, paid_at),
         )
@@ -2508,6 +3644,13 @@ class PhysicsPlusApp:
             event_id = self.audit(conn, user["id"], "payment_claim", claim_id, "reject")
             self.enqueue_notice(conn, event_id, "payment_claim_rejected", claim["student_id"])
             return Response(200, {"claim_id": claim_id, "status": "rejected"})
+        review = conn.execute(
+            "SELECT verdict FROM payment_claim_verifications WHERE claim_id=?", (claim_id,)
+        ).fetchone()
+        if not review or review["verdict"] != "correct":
+            fail(409, "verification_required", "Confirm the bank credit and mark the slip correct before approving")
+        if self._claim_precheck(conn, claim)["status"] != "passed":
+            fail(409, "slip_precheck_failed", "The slip or invoice changed; review the failed checks before approving")
         payment = self._record_payment(conn, user, {"invoice_id": claim["invoice_id"], "amount_satang": claim["amount_satang"], "method": "claim_verified", "reference": claim["reference"]}, claim_id)
         conn.execute("UPDATE payment_claims SET status='approved',reviewed_by=?,reviewed_at=? WHERE id=?", (user["id"], now(), claim_id))
         event_id = self.audit(conn, user["id"], "payment_claim", claim_id, "approve", {"payment_id": payment.body["payment_id"]})

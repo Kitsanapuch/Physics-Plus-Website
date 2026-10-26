@@ -7,6 +7,7 @@ body .live-header .mark{display:block;width:46px;height:46px;border-radius:10px;
 .header-actions button{font-size:11px;padding:9px 12px}
 .header-actions #logout-button{background:#1b1c18;color:#fff;border-color:#1b1c18}
 .header-actions .payment-alert-button{position:relative;display:grid;place-items:center;width:38px;height:38px;padding:0;border-color:#d8c56e;background:#fff8d7;color:#282419;font-size:20px;line-height:1;transition:transform .18s ease,background-color .18s ease}
+.header-actions .inbox-button{position:relative;display:grid;place-items:center;flex:none;width:38px;height:38px;padding:0}
 .header-actions .payment-alert-button:hover{transform:translateY(-2px);background:#ffeb92}
 .payment-alert-badge{position:absolute;top:-7px;right:-7px;display:grid;place-items:center;min-width:19px;height:19px;padding:0 4px;border-radius:999px;background:#bb352a;color:#fff;font-size:10px;font-weight:800;line-height:1;box-shadow:0 0 0 2px #fff}
 .payment-alert-badge[hidden],.payment-alert-toast[hidden]{display:none!important}
@@ -45,13 +46,97 @@ body .new-section>.panel{margin-bottom:20px}
 .transfer-account strong{font:700 clamp(20px,2.5vw,29px)/1.25 Outfit,'Noto Sans Thai',sans-serif;letter-spacing:.03em;color:#262318;white-space:nowrap}
 .transfer-account #transfer-holder{font-size:12px;color:#403c2c}
 .transfer-account button{flex:none;font-size:11px}
+.payment-detail[hidden],.payment-invoice-panel[hidden]{display:none!important}
+.payment-invoice-list{display:grid;gap:12px}
+.payment-invoice-card{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:20px;padding:17px 20px;border:1px solid #e8dfbc;border-radius:13px;background:linear-gradient(115deg,#fffefa,#fff9e8)}
+.payment-invoice-card h3{margin:6px 0 3px;font-size:15px;color:#28261d}
+.payment-invoice-card p{margin:0;font-size:11px}
+.payment-invoice-amount{font:700 22px/1.3 Outfit,'Noto Sans Thai',sans-serif;color:#252319;white-space:nowrap}
+.payment-invoice-card button{justify-self:end;white-space:nowrap;font-size:11px;padding:9px 13px}
+.payment-invoice-card button:disabled{opacity:.6;cursor:default}
+.payment-back{margin:0 0 15px;padding:9px 13px;font-size:11px;background:#fff;color:#4d4424;border-color:#e5d8a4}
+.payment-detail>.panel{max-width:760px}
+.payment-detail .eyebrow{margin:0 0 7px}
+.payment-detail h2{font-size:19px}
+.payment-due{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:18px 0;padding:18px 21px;border-radius:12px;background:#292820;color:#ffe977}
+.payment-due span{font-size:12px;font-weight:700}
+.payment-due strong{font:700 clamp(23px,3vw,31px)/1.2 Outfit,'Noto Sans Thai',sans-serif}
+.payment-detail .transfer-panel{margin:0;border-radius:12px;padding:17px}
+.payment-detail .transfer-panel .panel-head{margin-bottom:0}
+.payment-slip-form input[type=file]{cursor:pointer;background:#fffdf6;padding:14px;border-style:dashed;border-color:#d6c265}
+.payment-slip-form input[type=file]::file-selector-button{margin-right:12px;padding:9px 12px;border:0;border-radius:7px;background:#292820;color:#ffe977;font:700 11px 'Noto Sans Thai',sans-serif;cursor:pointer}
+.payment-slip-form .foot{margin:0;padding:0}
+.payment-history{margin-top:20px;grid-template-columns:1fr 1.25fr}
+.payment-history .receipt-panel{margin-top:0}
+.slip-download{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:6px 10px;border:1px solid #dac86e;border-radius:8px;background:#fff7ce;color:#4b3a12;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap}
+.slip-download:hover,.slip-download:focus-visible{background:#ffe778}
+#admin-finance>.grid{grid-template-columns:minmax(0,1fr)}
+#admin-claims table{min-width:720px}
+.claim-review-cell{min-width:205px;max-width:290px;white-space:normal;vertical-align:middle}
+.claim-review-badge{display:block;width:fit-content;max-width:100%;margin:3px 0;padding:5px 9px;border:1px solid #ddd9ca;border-radius:8px;background:#f8f7f0;color:#5b5749;font-size:10px;font-weight:750;line-height:1.45;white-space:normal}
+.claim-review-badge[data-state="passed"],.claim-review-badge[data-state="correct"]{border-color:#b9d5bb;background:#edf8ef;color:#2e6139}
+.claim-review-badge[data-state="failed"],.claim-review-badge[data-state="incorrect"]{border-color:#efc5b9;background:#fff1ed;color:#9a3429}
+.claim-review-hint{display:block;margin-top:5px;color:#76694b;font-size:10px;line-height:1.5}
+.claim-row-actions{min-width:215px;white-space:normal}
+.claim-row-actions button:disabled{opacity:.5;cursor:not-allowed}
+body .live-dialog.claim-review-dialog{width:min(710px,calc(100vw - 24px));max-height:calc(100vh - 32px);overflow:auto}
+.claim-review-summary{margin-top:15px;padding:14px 16px;border:1px solid #e7ca8b;border-radius:11px;background:#fff8e7;color:#614f23;line-height:1.6}
+.claim-review-summary[data-state="passed"]{border-color:#b9d5bb;background:#f2f9f1;color:#315e36}
+.claim-review-summary[data-state="failed"]{border-color:#ecc1b5;background:#fff1ec;color:#8e3d2e}
+.claim-review-summary strong{display:block;font-size:13px}
+.claim-review-summary p{margin:6px 0 4px;font-size:12px}
+.claim-review-summary small{display:block;font-size:10px}
+.claim-qr-result{display:grid;gap:4px;margin-top:12px;padding:11px 13px;border:1px solid #dccd9a;border-radius:9px;background:#fffaf0;color:#5f522c;line-height:1.5}
+.claim-qr-result[data-state="decoded"]{border-color:#b8cba8;background:#f6faef;color:#425d39}
+.claim-qr-result[data-state="invalid"]{border-color:#e8b9a9;background:#fff3ee;color:#8d3e2c}
+.claim-qr-result strong{font-size:12px}
+.claim-qr-result p{margin:0;font-size:11px}
+.claim-qr-result small{font-size:10px}
+.claim-review-checks{display:grid;gap:5px;margin:13px 0;padding:0;list-style:none;font-size:11px;line-height:1.5}
+.claim-review-checks li{padding:7px 10px;border-radius:7px;background:#f2f8f0;color:#346543}
+.claim-review-checks li[data-state="failed"]{background:#fff0eb;color:#963b2d}
+.claim-review-checks li[data-state="warning"]{background:#fff7e8;color:#805c1f}
+.claim-review-history{display:grid;gap:3px;margin:14px 0;padding:10px 12px;border-left:3px solid #dec252;background:#faf8ee;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.claim-slip-preview{display:grid;justify-items:start;gap:8px;margin-top:14px}
+.claim-slip-preview img{display:block;max-width:100%;max-height:38vh;margin:0 auto;border:1px solid #ded8c3;border-radius:9px;background:#e8e8e3;object-fit:contain}
+.claim-slip-preview img[hidden]{display:none}
+.claim-review-form{margin-top:18px;padding-top:15px;border-top:1px solid #e9e4d3}
+.claim-review-form .claim-bank-confirmation{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;border:1px solid #ded1a2;border-radius:9px;background:#fff9e7;color:#514728;font-size:11px;line-height:1.55;cursor:pointer}
+.claim-review-form .claim-bank-confirmation input[type="checkbox"]{flex:none;width:17px;height:17px;min-width:17px;margin:0;accent-color:#736015}
+.claim-review-form textarea{min-height:80px}
+.claim-review-form .live-modal-feedback{margin:0}
+@media(max-width:700px){.payment-invoice-card{grid-template-columns:1fr auto;gap:10px}.payment-invoice-card button{grid-column:1/-1;justify-self:stretch}.payment-invoice-amount{font-size:19px}.payment-due{align-items:flex-start;flex-direction:column}.payment-history{grid-template-columns:1fr}}
 .sheet-sync-status{margin-top:16px;padding:13px 15px;border:1px solid #e4dfcc;border-radius:10px;background:#fbfaf4;color:#403d31;font-size:12px;line-height:1.6}
 .sheet-sync-status[data-state="ready"]{border-color:#c4dcb6;background:#f1f8ed;color:#32633a}
 .sheet-sync-status[data-state="pending"]{border-color:#edcf81;background:#fff9e9;color:#735415}
+.sheet-sync-status[data-state="stalled"]{border-color:#e9b5a4;background:#fff2eb;color:#8d4328}
 .sheet-sync-status[data-state="unconfigured"]{border-color:#e9c1b3;background:#fff5ef;color:#8d4328}
 .sheet-sync-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
 .sheet-sync-actions a,.sheet-sync-actions button{display:inline-flex;align-items:center;justify-content:center;min-height:35px;padding:8px 11px;border:1px solid #dfd8bb;border-radius:8px;background:#fff;color:#302d22;font-size:11px;font-weight:700;text-decoration:none}
 .sheet-sync-actions a:hover,.sheet-sync-actions button:hover{background:#fff2b9}
+.individual-billing-panel{border-color:#e1d29c;background:linear-gradient(145deg,#fffef8,#fff9df 55%,#fff)}
+.individual-billing-panel .panel-head{margin-bottom:16px}
+.individual-billing-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap}
+.individual-billing-controls label{display:grid;gap:5px;color:#665d3d;font-size:11px;font-weight:700}
+.individual-billing-controls input{min-height:38px;padding:8px 10px;border:1px solid #ded4ad;border-radius:8px;background:#fff;color:#28261d;font:inherit}
+.individual-billing-controls button{min-height:38px;padding:8px 14px;font-size:11px}
+.billing-status{margin:16px 0 12px;padding:10px 13px;border-radius:9px;background:#f5efdb;color:#5d512e;font-size:12px;font-weight:650;line-height:1.6}
+.billing-blockers{margin-top:14px;padding:12px 15px;border:1px solid #efc0aa;border-radius:10px;background:#fff3ec;color:#8a442b;font-size:11px;line-height:1.6}
+.billing-blockers ul{margin:7px 0 0;padding-left:18px}
+.individual-billing-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:17px}
+.individual-billing-footer strong{font:700 16px/1.4 Outfit,'Noto Sans Thai',sans-serif;color:#29261c}
+.individual-billing-footer button{min-height:38px;padding:9px 15px;font-size:11px}
+.individual-billing-footer button:disabled{opacity:.55;cursor:not-allowed}
+.monthly-student-panel{margin-top:20px;border-color:#e5d58d;background:linear-gradient(120deg,#fffdf0,#fff)}
+.monthly-student-list{display:grid;gap:10px;margin-top:14px}
+.monthly-student-item{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:15px;padding:13px 15px;border:1px solid #e7ddba;border-radius:10px;background:#fff}
+.monthly-student-item>div{display:grid;gap:4px;min-width:0}
+.monthly-student-item>div strong{font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.monthly-student-item small{font-size:10px}
+.monthly-student-amount{font:700 17px/1.3 Outfit,'Noto Sans Thai',sans-serif;white-space:nowrap}
+.monthly-student-item button{white-space:nowrap;font-size:11px}
+.monthly-paid-state{justify-self:end;padding:7px 10px;border-radius:999px;background:#edf5e8;color:#376042;font-size:11px;font-weight:700;white-space:nowrap}
+@media(max-width:700px){.monthly-student-item{grid-template-columns:1fr auto}.monthly-student-item button{grid-column:1/-1;justify-self:stretch}.individual-billing-controls{align-items:stretch}.individual-billing-controls label,.individual-billing-controls button{flex:1 1 100%}}
 .course-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 .course-card{border:1px solid #e8e7df;background:#fcfcf8;border-radius:12px;padding:18px;display:flex;flex-direction:column;align-items:flex-start;gap:7px}
 .course-card h3{font-size:15px;line-height:1.5;margin:4px 0 0}
@@ -270,3 +355,204 @@ body .new-section,body .new-section .panel{scroll-margin-top:105px}
 @media(max-width:540px){.payment-alert-toast{top:74px;right:14px;left:14px;max-width:none;flex-wrap:wrap}.transfer-account{align-items:flex-start;flex-direction:column}.transfer-account button{align-self:flex-start}.transfer-account strong{white-space:normal;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){body button.is-working::after{animation:none;transform:translateX(82%)}}
 @media(prefers-reduced-motion:reduce){.payment-alert-toast{animation:none}.header-actions .payment-alert-button{transition:none}}
+
+/* A spacious dashboard shell: the section menu stays visible across the top. */
+body.live-ready{padding-left:0!important;background-color:#faf9f5!important}
+body .workspace-topbar{
+  display:grid;grid-template-columns:max-content minmax(0,1fr) max-content max-content;
+  align-items:center;gap:clamp(12px,1.6vw,24px);
+  position:sticky;top:0;z-index:20;
+  min-height:78px;padding:11px clamp(18px,3vw,44px);
+  background:#fffefa!important;border-bottom:1px solid #e9e6d9!important;
+  -webkit-backdrop-filter:none;backdrop-filter:none;
+  box-shadow:0 8px 28px #332a1010;
+}
+body .workspace-topbar>.brand{min-width:0;white-space:nowrap;font-size:19px;line-height:1.2;color:#222219}
+body .workspace-topbar>.brand .mark{display:block;width:43px;height:43px;flex:none;border:1px solid #e8d275;box-shadow:0 3px 12px #2d250e12}
+body .workspace-topbar>.brand .muted{display:block;margin-top:4px;font:600 9px/1.2 Outfit,'Noto Sans Thai',sans-serif;letter-spacing:.07em;color:#88846f}
+body .workspace-topbar .side-nav{
+  display:flex;align-items:center;gap:3px;min-width:0;overflow-x:auto;overflow-y:hidden;
+  padding:7px 2px;scrollbar-width:thin;scrollbar-color:#ddd5af transparent;
+  overscroll-behavior-inline:contain;
+}
+body .workspace-topbar .side-nav button{
+  flex:0 0 auto;width:auto;min-height:38px;padding:8px 12px;
+  border:1px solid transparent;border-radius:11px;background:transparent;
+  color:#77766c;font-size:12px;font-weight:600;white-space:nowrap;
+  transition:background-color .16s ease,color .16s ease,transform .16s ease;
+}
+body .workspace-topbar .side-nav button:hover{transform:translateY(-2px);background:#f5f3e9;color:#25241b}
+body .workspace-topbar .side-nav button.selected,
+body .workspace-topbar .side-nav button.selected:hover{
+  background:#ffdc4c;color:#242115;border-color:#efd04f;
+  box-shadow:0 3px 10px #a078141a;
+}
+body .workspace-topbar .side-nav button.selected::before{
+  left:12px;right:12px;top:auto;bottom:3px;width:auto;height:2px;
+  border-radius:2px;background:#302719;
+  animation:pp-nav-underline .24s ease-out both;
+}
+body .workspace-profile{
+  display:flex;align-items:center;gap:10px;min-width:0;margin:0;padding:0 17px 0 0;
+  border:0;border-right:1px solid #e8e5d9;color:#292820;
+}
+body .workspace-profile .profile-avatar{flex:none;width:34px;height:34px;background:#ffe16d;box-shadow:0 0 0 3px #ffe16d30}
+body .workspace-profile>div{min-width:0;max-width:120px}
+body .workspace-profile strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
+body .workspace-profile small{display:block;margin-top:2px;color:#827e70;font-size:10px}
+body .workspace-topbar .header-actions{min-width:0;white-space:nowrap}
+body .workspace-topbar .header-actions button{border-radius:10px}
+body .workspace-topbar .header-actions #logout-button{background:#292820;color:#fff;border-color:#292820}
+body .workspace-topbar .header-actions #logout-button:hover{background:#444236}
+body main{max-width:1460px;padding:32px clamp(18px,3.4vw,50px) 70px}
+body .intro{border-radius:22px;margin-bottom:22px}
+body .stats{gap:17px;margin-bottom:24px}
+body .stat{border-radius:18px;padding:22px 24px;min-height:148px}
+body .stat:first-child{background:linear-gradient(135deg,#20211e,#383223)!important}
+body .stat:nth-child(2){background:linear-gradient(135deg,#fff9df,#fffefa 70%)!important}
+body .stat:nth-child(3){background:linear-gradient(135deg,#ffffff,#fbfaf5)!important}
+body .stat::before{left:24px;right:24px;border-radius:0 0 6px 6px}
+body .stat span{font-weight:700;letter-spacing:.01em}
+body .stat strong{margin:15px 0 7px;font-weight:700}
+body .panel{border-radius:18px}
+body .workspace-loading-panel{min-height:164px;padding:24px 26px}
+body .workspace-loading-panel>strong{font-size:15px}
+body .workspace-loading-panel>p{margin:5px 0 20px}
+.workspace-loading-rows{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.workspace-loading-row{display:block;height:56px;border-radius:12px;background:#f4f1e5;box-shadow:inset 0 0 0 1px #ece6cf}
+body .workload-panel{padding:25px 28px}
+.workload-eyebrow{display:block;margin-bottom:6px;color:#a88726;font:700 10px/1.3 Outfit,'Noto Sans Thai',sans-serif;letter-spacing:.13em}
+.workload-heading h2{margin:0}
+.workload-heading p{margin:4px 0 0}
+.workload-content{display:grid;grid-template-columns:190px minmax(0,1fr);gap:32px;align-items:center;margin-top:21px}
+.workload-ring{position:relative;display:grid;place-items:center;width:172px;height:172px;max-width:100%;border-radius:50%;isolation:isolate;box-shadow:0 8px 24px #332a1013}
+.workload-ring::before{content:"";position:absolute;inset:21px;border-radius:50%;background:#fff;z-index:0}
+.workload-ring-copy{position:relative;z-index:1;text-align:center}
+.workload-ring-copy strong{display:block;color:#27271f;font:700 33px/1.1 Outfit,'Noto Sans Thai',sans-serif}
+.workload-ring-copy small{display:block;margin-top:4px;color:#828074;font-size:10px}
+.workload-breakdown{display:grid;gap:13px;min-width:0}
+.workload-row-caption{display:flex;align-items:center;gap:9px;color:#4a493e;font-size:11px;font-weight:600}
+.workload-row-caption strong{margin-left:auto;color:#24241c;font:700 12px Outfit,'Noto Sans Thai',sans-serif}
+.workload-swatch{display:block;flex:none;width:9px;height:9px;border-radius:50%}
+.workload-track{height:7px;overflow:hidden;margin:7px 0 0 18px;border-radius:99px;background:#f0eee5}
+.workload-bar{display:block;height:100%;border-radius:inherit;transform-origin:left}
+@keyframes pp-bar-fill{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@media(prefers-reduced-motion:no-preference){.workload-bar{animation:pp-bar-fill .55s cubic-bezier(.2,.75,.25,1) both}}
+body .new-section,body .new-section .panel,#admin-claims,#admin-invoices,#admin-notifications{scroll-margin-top:105px}
+
+@media(max-width:1260px){
+  body .workspace-topbar{grid-template-columns:minmax(0,1fr) max-content max-content;row-gap:4px}
+  body .workspace-topbar .side-nav{grid-column:1/-1;grid-row:2;width:100%;padding:5px 0}
+}
+@media(max-width:850px){
+  body .workspace-topbar{position:sticky;top:0;grid-template-columns:minmax(0,1fr) max-content max-content;min-height:68px;padding:10px 18px;gap:12px}
+  body .workspace-topbar .side-nav{display:none}
+  body .workspace-profile{padding-right:12px}
+  body .workspace-profile>div{display:none}
+  body .mobile-nav{position:sticky;top:68px;z-index:18;display:flex;gap:6px;overflow-x:auto;padding:9px 18px;background:#fffefa;border-bottom:1px solid #e9e6d9;box-shadow:0 5px 16px #332a100a;scrollbar-width:thin}
+  body .mobile-nav button{border-radius:10px;font-weight:600;white-space:nowrap}
+  body .new-section,body .new-section .panel,#admin-claims,#admin-invoices,#admin-notifications{scroll-margin-top:125px}
+  .workload-content{grid-template-columns:160px minmax(0,1fr);gap:20px}
+  .workload-ring{width:150px;height:150px}
+}
+@media(max-width:540px){
+  body .workspace-topbar{grid-template-columns:minmax(0,1fr) max-content;min-height:66px;padding:9px 14px;gap:8px;flex-wrap:nowrap}
+  body .workspace-topbar>.brand{font-size:15px;gap:8px}
+  body .workspace-topbar>.brand .mark{width:36px;height:36px}
+  body .workspace-topbar>.brand .muted{display:none}
+  body .workspace-profile{display:none}
+  body .workspace-topbar .header-actions{gap:5px}
+  body .workspace-topbar .header-actions button{padding:7px 8px;font-size:10px}
+  body .workspace-topbar .header-actions .payment-alert-button{width:32px;height:32px;font-size:18px}
+  body .mobile-nav{top:66px;padding:8px 14px}
+  body main{padding:18px 14px 55px}
+  body .intro{border-radius:18px}
+  body .stat{border-radius:15px}
+  .workspace-loading-rows{grid-template-columns:1fr}
+  .workspace-loading-row{height:42px}
+  body .workload-panel{padding:21px 18px}
+  .workload-content{grid-template-columns:1fr;justify-items:center;gap:24px}
+  .workload-breakdown{width:100%}
+}
+@media(max-width:400px){
+  body .workspace-topbar .header-actions #password-button{display:grid;place-items:center;width:33px;height:33px;min-width:33px;padding:0;font-size:0}
+  body .workspace-topbar .header-actions #password-button::before{content:"🔑";font-size:16px;line-height:1}
+}
+@media(prefers-reduced-motion:reduce){
+  body .workspace-topbar .side-nav button,
+  body .workspace-topbar .side-nav button.selected::before{transition:none!important;animation:none!important}
+}
+
+/* Course checkout is a focused step after enrollment. Keep the amount and slip
+   distinct, with a visible drop target that remains a normal file input. */
+.payment-detail>.panel{overflow:hidden;border-color:#e3d592;background:linear-gradient(155deg,#fffefa 0%,#fffdf7 63%,#fff8d8 100%)}
+.payment-detail>.panel .eyebrow{font-size:10px;font-weight:800;letter-spacing:.13em;color:#96751d}
+.payment-detail .payment-due{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:11px 20px;margin:22px 0;padding:18px 20px;border:1px solid #e8d478;box-shadow:0 12px 26px #443b1719,inset 0 1px 0 #fff2}
+.payment-due strong{font-variant-numeric:tabular-nums}
+.payment-due .copy-payment-amount{min-height:36px;padding:8px 12px;border:1px solid #fff0ae;border-radius:8px;background:#ffe176;color:#28251a;font-size:11px;font-weight:800;white-space:nowrap;transition:transform .16s ease,background-color .16s ease}
+.payment-due .copy-payment-amount:hover{transform:translateY(-2px);background:#fff0ae}
+.payment-slip-form{margin-top:22px}
+.payment-slip-form .payment-drop{position:relative;isolation:isolate;display:grid;justify-items:center;gap:9px;min-height:196px;padding:25px 20px;text-align:center;border:2px dashed #c9ad54;border-radius:17px;background:radial-gradient(circle at 50% 0%,#fff6d9 0%,#fffefa 72%);color:#312c1d;cursor:pointer;overflow:hidden;transition:border-color .2s ease,background-color .2s ease,box-shadow .2s ease,transform .2s ease}
+.payment-slip-form .payment-drop::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:linear-gradient(115deg,transparent 25%,#fff9cd8c 50%,transparent 75%);transform:translateX(-130%);transition:transform .55s ease}
+.payment-slip-form .payment-drop:hover::before,.payment-slip-form .payment-drop.is-dragging::before{transform:translateX(130%)}
+.payment-slip-form .payment-drop:hover,.payment-slip-form .payment-drop:focus-within{border-color:#9a7517;box-shadow:0 0 0 4px #e9c7432a,0 10px 24px #4b3d1514}
+.payment-slip-form .payment-drop.is-dragging{transform:scale(1.012);border-style:solid;border-color:#9a7517;background:#fff2b7;box-shadow:0 0 0 6px #f0d15a3b,0 16px 34px #42341424}
+.payment-slip-form .payment-drop.has-file{border-style:solid;border-color:#9cb569;background:#f8fde9}
+.payment-drop-icon{display:grid;place-items:center;width:52px;height:52px;border:1px solid #e5d277;border-radius:15px;background:#fff5c7;color:#302818;font:700 29px/1 Outfit,'Noto Sans Thai',sans-serif;box-shadow:0 8px 19px #9a771925;transition:transform .22s ease,background-color .22s ease}
+.payment-drop:hover .payment-drop-icon,.payment-drop.is-dragging .payment-drop-icon{transform:translateY(-5px);background:#ffe776}
+.payment-drop.has-file .payment-drop-icon{background:#e8f5c6;border-color:#b1ca7d;color:#3c5c1a}
+.payment-slip-form .payment-drop input[type=file]{width:min(100%,340px);min-height:42px;margin:2px 0 0;padding:5px;border:0;border-radius:8px;background:#292820;color:#fff3b5;font-size:11px;cursor:pointer}
+.payment-slip-form .payment-drop input[type=file]::file-selector-button{margin-right:10px;background:#ffe16b;color:#292820;font-weight:800}
+.payment-file-name{display:block;max-width:100%;color:#66614b;font-size:11px;font-weight:600;overflow-wrap:anywhere}
+.payment-drop.has-file .payment-file-name{color:#496a2a}
+.payment-drop .payment-file-name.is-error{color:#a63e2b;font-weight:800}
+.payment-drop-flight{position:absolute;z-index:2;top:37px;left:calc(50% - 12px);width:23px;height:28px;border:2px solid #a07c27;border-radius:4px;background:#fffdf2;box-shadow:0 5px 12px #6650243b;opacity:0;pointer-events:none;transform:translate(-100px,95px) rotate(-24deg)}
+.payment-drop-flight::after{content:"";position:absolute;top:7px;left:4px;width:12px;height:9px;border-top:2px solid #e6c862;border-bottom:2px solid #e6c862}
+.payment-drop.is-shooting .payment-drop-flight{animation:pp-slip-shot .9s cubic-bezier(.22,.77,.34,1) both}
+.payment-drop.is-shooting .payment-drop-icon{animation:pp-slip-catch .9s cubic-bezier(.2,.7,.2,1)}
+@keyframes pp-slip-shot{0%{opacity:0;transform:translate(-100px,95px) rotate(-24deg) scale(.88)}18%{opacity:1}55%{opacity:1;transform:translate(5px,-31px) rotate(12deg) scale(1.05)}78%{opacity:1;transform:translate(0,1px) rotate(0) scale(.72)}100%{opacity:0;transform:translate(0,13px) rotate(0) scale(.24)}}
+@keyframes pp-slip-catch{0%,55%{transform:translateY(0) scale(1)}78%{transform:translateY(2px) scale(1.13)}100%{transform:translateY(0) scale(1)}}
+.payment-slip-form>.primary{min-height:43px;padding-inline:18px}
+
+/* The first screen gives each role a compact schedule and course progress. */
+.dashboard-snapshot{margin:0 0 22px;padding:25px 27px;border:1px solid #e8e3cf!important;background:linear-gradient(135deg,#fffefa,#fff 62%,#fffae4);overflow:hidden}
+.snapshot-head{position:relative;padding:0 0 17px;border-bottom:1px solid #ece7d8}
+.snapshot-kicker{display:block;margin:0 0 5px;color:#a68620;font:800 10px/1.3 Outfit,'Noto Sans Thai',sans-serif;letter-spacing:.14em}
+.snapshot-head h2{margin:0 0 5px!important;font-size:20px!important;letter-spacing:-.02em}
+.snapshot-head h2::before{display:none!important}
+.snapshot-head .muted{margin:0;font-size:11px}
+.snapshot-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px;margin-top:19px}
+.snapshot-block{min-width:0;padding:18px;border:1px solid #ede8d8;border-radius:15px;background:#fff;box-shadow:0 5px 15px #211b0c09}
+.snapshot-block h3{margin:0 0 13px;color:#2b291d;font-size:13px;line-height:1.4}
+.snapshot-block>.muted{margin:0;font-size:11px}
+.snapshot-schedule-row{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 10px;margin-top:8px;padding:10px 12px 10px 16px;border:1px solid #ece8d9;border-radius:10px;background:#fdfcf6}
+.snapshot-schedule-row::before{content:"";position:absolute;top:10px;bottom:10px;left:0;width:3px;border-radius:0 3px 3px 0;background:#e5bf3f}
+.snapshot-schedule-row strong{grid-column:1/-1;color:#26251e;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.snapshot-schedule-row span{color:#656358;font-size:10px;line-height:1.55}
+.snapshot-schedule-row small{align-self:start;color:#89701d;font-size:10px;font-weight:700;text-align:right}
+.snapshot-progress-row{display:grid;gap:5px;margin:0 0 13px}
+.snapshot-progress-row:last-child{margin-bottom:0}
+.snapshot-progress-caption{display:flex;align-items:baseline;justify-content:space-between;gap:8px;color:#38372d;font-size:11px;font-weight:650}
+.snapshot-progress-caption span{min-width:0;overflow-wrap:anywhere}
+.snapshot-progress-caption strong{flex:none;color:#80610d;font:800 13px/1.2 Outfit,'Noto Sans Thai',sans-serif;font-variant-numeric:tabular-nums}
+.snapshot-progress-track{height:8px;overflow:hidden;border-radius:99px;background:#eeeadd;box-shadow:inset 0 1px 2px #342e1517}
+.snapshot-progress-fill{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#d8aa2e,#ffe16b);transform-origin:left;box-shadow:0 0 9px #e6c44975}
+.snapshot-progress-row>small{color:#888679;font-size:10px}
+@media(prefers-reduced-motion:no-preference){.snapshot-progress-fill{animation:pp-bar-fill .52s cubic-bezier(.2,.75,.25,1) both}}
+
+/* Admin-owned teacher openings and the same data read-only for each role. */
+.availability-panel{margin-top:20px;border-color:#e5dec3!important;background:linear-gradient(145deg,#fffef9,#fff)}
+.availability-panel .panel-head{margin-bottom:10px}
+.availability-panel .tablewrap{margin-top:18px}
+.availability-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:15px}
+.availability-list>.muted{grid-column:1/-1;margin:0}
+.availability-card{display:grid;gap:5px;min-width:0;padding:13px 15px;border:1px solid #e9dfb4;border-radius:12px;background:#fffaf0;box-shadow:inset 3px 0 0 #e6c348}
+.availability-card strong{color:#29271e;font-size:12px;line-height:1.45}
+.availability-card span{color:#686251;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+@media(max-width:850px){.snapshot-grid{grid-template-columns:1fr}.dashboard-snapshot{padding:21px}.availability-list{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.payment-detail .payment-due{grid-template-columns:1fr;gap:8px;padding:16px}.payment-due .copy-payment-amount{justify-self:start}.payment-slip-form .payment-drop{min-height:174px;padding:20px 14px}.dashboard-snapshot{padding:19px 16px}.snapshot-head h2{font-size:17px!important}.snapshot-block{padding:15px}.availability-list{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.payment-due .copy-payment-amount,.payment-slip-form .payment-drop,.payment-slip-form .payment-drop::before,.payment-drop-icon{transition:none!important}.payment-slip-form .payment-drop.is-dragging,.payment-due .copy-payment-amount:hover,.payment-drop:hover .payment-drop-icon,.payment-drop.is-dragging .payment-drop-icon{transform:none!important}.payment-drop-flight{display:none}.payment-drop.is-shooting .payment-drop-icon,.snapshot-progress-fill{animation:none!important}}
+
+.course-format-tag{display:inline-block;margin-top:6px;padding:3px 8px;border-radius:999px;border:1px solid #ded8bc;background:#f7f5eb;color:#5e5a46;font-size:10px;font-weight:800;white-space:nowrap}
+.course-format-tag[data-format="individual"]{border-color:#d6bd59;background:#fff4bf;color:#6c5017}
+body .mobile-nav button:focus-visible{outline:3px solid #8f6c04;outline-offset:2px}

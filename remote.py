@@ -24,11 +24,13 @@ from backend import (
     STUDENT_CODE_MIGRATION,
     TEACHER_ROSTER_MIGRATION,
     PhysicsPlusApp,
+    PORTAL_FEATURE_SCHEMA,
     RATE_GRID,
     RATE_GRID_EFFECTIVE_FROM,
     RATE_GRID_MIGRATION,
     Response,
     SCHEMA,
+    SLIP_VERIFICATION_SCHEMA,
     SHEET_SYNC_SCHEMA,
     SHEET_DATASETS,
     fail,
@@ -39,6 +41,7 @@ from backend import (
     migrate_brand_codes,
     migrate_receipts,
     seed_initial_courses,
+    seed_individual_courses,
     seed_initial_teachers,
     seed_payment_account_and_sheet_queue,
     now,
@@ -182,6 +185,64 @@ class PersistentRateLimiter:
         else:
             self._check(conn, digest, current, limit, period)
 
+    def check_login_attempt(self, client_ip: str, identifier: str, *, conn=None) -> None:
+        """Atomically count both login limits with one remote write/commit.
+
+        If the IP is blocked, the identifier is untouched. If only the
+        identifier is blocked, the IP attempt remains counted. Materializing
+        the IP decision before either upsert preserves that order even when
+        the accepted IP attempt reaches its limit in this statement.
+        """
+        ip_digest = hmac.new(
+            self.owner.auth_token.encode("utf-8"),
+            f"ip:{client_ip}".encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        login_digest = hmac.new(
+            self.owner.auth_token.encode("utf-8"),
+            f"login:{identifier}".encode("utf-8"), hashlib.sha256,
+        ).hexdigest()
+        current = now()
+        if conn is None:
+            with self.owner.connect() as own_conn:
+                self._check_login_attempt(own_conn, ip_digest, login_digest, current)
+        else:
+            self._check_login_attempt(conn, ip_digest, login_digest, current)
+
+    @staticmethod
+    def _check_login_attempt(conn, ip_digest: str, login_digest: str, current: int) -> None:
+        if current % 97 == 0:
+            conn.execute("DELETE FROM login_throttle WHERE window_started < ?", (current - 24 * 3600,))
+        cutoff = current - 15 * 60
+        accepted = conn.execute(
+            "WITH limits(key_hash,cap,cutoff) AS MATERIALIZED "
+            "(VALUES (?,?,?),(?,?,?)),"
+            "ip_permitted(allowed) AS MATERIALIZED ("
+            "SELECT COALESCE((SELECT window_started<=? OR attempts<? "
+            "FROM login_throttle WHERE key_hash=?),1)) "
+            "INSERT INTO login_throttle(key_hash,window_started,attempts) "
+            "SELECT limits.key_hash,?,1 FROM limits,ip_permitted "
+            "WHERE ip_permitted.allowed=1 AND true "
+            "ON CONFLICT(key_hash) DO UPDATE SET "
+            "window_started=CASE WHEN login_throttle.window_started<="
+            "(SELECT cutoff FROM limits WHERE limits.key_hash=excluded.key_hash) "
+            "THEN excluded.window_started ELSE login_throttle.window_started END,"
+            "attempts=CASE WHEN login_throttle.window_started<="
+            "(SELECT cutoff FROM limits WHERE limits.key_hash=excluded.key_hash) "
+            "THEN 1 ELSE login_throttle.attempts+1 END "
+            "WHERE login_throttle.window_started<="
+            "(SELECT cutoff FROM limits WHERE limits.key_hash=excluded.key_hash) "
+            "OR login_throttle.attempts<"
+            "(SELECT cap FROM limits WHERE limits.key_hash=excluded.key_hash) "
+            "RETURNING key_hash",
+            (ip_digest, 20, cutoff, login_digest, 10, cutoff,
+             cutoff, 20, ip_digest, current),
+        ).fetchall()
+        # Count the accepted IP even when the identifier is blocked. This
+        # commit must not be rolled back by a later login/authentication error.
+        conn.commit()
+        if {row[0] for row in accepted} != {ip_digest, login_digest}:
+            fail(429, "rate_limited", "Too many attempts; try again later")
+
     @staticmethod
     def _check(conn, digest: str, current: int, limit: int, period: int) -> None:
         # Each key is one atomic write and commits independently. An identifier
@@ -228,6 +289,16 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
         self._sheet_schema_lock = threading.Lock()
         self._student_code_ready = False
         self._student_code_lock = threading.Lock()
+        self._payment_slips_ready = False
+        self._payment_slips_lock = threading.Lock()
+        self._slip_verification_ready = False
+        self._slip_verification_lock = threading.Lock()
+        self._portal_features_ready = False
+        self._portal_features_lock = threading.Lock()
+        self._foreign_keys_verified = False
+        self._foreign_keys_lock = threading.Lock()
+        self._session_cleanup_trigger_ready = False
+        self._session_cleanup_lock = threading.Lock()
         # Broad historical migrations remain an explicit management step.
         # Additive sync/settings tables and the narrow student-code migration
         # are safe to apply once on the first connection of each warm worker.
@@ -264,18 +335,66 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             # libsql.connect(timeout=30.0) configures the client instead.
             if self.database_scheme == "turso":
                 connection.execute("PRAGMA busy_timeout=30000")
-            enabled = connection.execute("PRAGMA foreign_keys").fetchone()
-            if enabled is None or enabled[0] != 1:
-                raise RuntimeError("Remote database must enforce foreign keys")
+            # Every fresh connection enables FK checks before any transaction.
+            # Verify the driver's behavior once per warm worker, rather than
+            # paying for another remote read on every API request.
+            if not self._foreign_keys_verified:
+                with self._foreign_keys_lock:
+                    if not self._foreign_keys_verified:
+                        enabled = connection.execute("PRAGMA foreign_keys").fetchone()
+                        if enabled is None or enabled[0] != 1:
+                            raise RuntimeError("Remote database must enforce foreign keys")
+                        self._foreign_keys_verified = True
             # A deployed database already has these tables and migration
             # marker. Inspect it once per warm worker instead of issuing DDL,
             # 16 seed writes and a migration transaction on every cold start.
-            if not self._sheet_schema_ready or not self._student_code_ready:
+            if (not self._sheet_schema_ready or not self._student_code_ready
+                    or not self._payment_slips_ready or not self._slip_verification_ready
+                    or not self._portal_features_ready
+                    or not self._session_cleanup_trigger_ready):
                 present = {row[0] for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-                    "('users','app_migrations','code_counters','audit_events',"
-                    "'sheet_sync_state','payment_account')"
+                    "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') AND name IN "
+                    "('users','sessions','sessions_cleanup_expired','app_migrations','code_counters','audit_events',"
+                    "'payment_claims',"
+                    "'sheet_sync_state','payment_account','payment_slips','payment_claim_verifications',"
+                    "'course_formats','course_progress_targets','teacher_availability',"
+                    "'inbox_notifications','assignments','individual_monthly_invoices',"
+                    "'individual_billing_lines')"
                 ).fetchall()}
+                if not self._session_cleanup_trigger_ready and "sessions" in present:
+                    with self._session_cleanup_lock:
+                        if not self._session_cleanup_trigger_ready:
+                            if "sessions_cleanup_expired" not in present:
+                                connection.execute(
+                                    "CREATE TRIGGER IF NOT EXISTS sessions_cleanup_expired "
+                                    "AFTER INSERT ON sessions BEGIN "
+                                    "DELETE FROM sessions WHERE expires_at<=NEW.created_at; END"
+                                )
+                            self._session_cleanup_trigger_ready = True
+                if not self._portal_features_ready and "users" in present:
+                    with self._portal_features_lock:
+                        if not self._portal_features_ready:
+                            if not {"course_formats", "course_progress_targets", "teacher_availability", "inbox_notifications", "assignments", "individual_monthly_invoices", "individual_billing_lines"}.issubset(present):
+                                connection.executescript(PORTAL_FEATURE_SCHEMA)
+                            self._portal_features_ready = True
+                if not self._payment_slips_ready and "users" in present:
+                    with self._payment_slips_lock:
+                        if not self._payment_slips_ready:
+                            if "payment_slips" not in present:
+                                connection.execute(
+                                    "CREATE TABLE IF NOT EXISTS payment_slips ("
+                                    "claim_id TEXT PRIMARY KEY REFERENCES payment_claims(id),"
+                                    "mime_type TEXT NOT NULL CHECK(mime_type IN ('image/jpeg','image/png','image/webp')) ,"
+                                    "content BLOB NOT NULL,sha256 TEXT NOT NULL UNIQUE,"
+                                    "uploaded_at INTEGER NOT NULL,CHECK(length(content) BETWEEN 1 AND 870400))"
+                                )
+                            self._payment_slips_ready = True
+                if not self._slip_verification_ready and "payment_claims" in present:
+                    with self._slip_verification_lock:
+                        if not self._slip_verification_ready:
+                            if "payment_claim_verifications" not in present:
+                                connection.executescript(SLIP_VERIFICATION_SCHEMA)
+                            self._slip_verification_ready = True
                 if not self._sheet_schema_ready:
                     with self._sheet_schema_lock:
                         if not self._sheet_schema_ready:
@@ -320,6 +439,10 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
         """Run idempotent schema/rate initialization from a trusted CLI."""
         with self.connect() as conn:
             conn.executescript(SCHEMA + THROTTLE_SCHEMA)
+            self._payment_slips_ready = True
+            self._slip_verification_ready = True
+            self._portal_features_ready = True
+            self._session_cleanup_trigger_ready = True
             migrate_outbox_schema(conn)
             migrate_academic_schema(conn)
             migrate_student_codes(conn)
@@ -327,6 +450,7 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             migrate_brand_codes(conn)
             seed_initial_teachers(conn)
             seed_initial_courses(conn)
+            seed_individual_courses(conn)
             migrate_receipts(conn)
             seed_payment_account_and_sheet_queue(conn)
             conn.execute("BEGIN IMMEDIATE")
@@ -406,6 +530,9 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             receipts_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipts'"
             ).fetchone()
+            verification_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='payment_claim_verifications'"
+            ).fetchone()
             payments_missing_receipts = conn.execute(
                 "SELECT COUNT(*) FROM payments p LEFT JOIN receipts r ON r.payment_id=p.id WHERE r.id IS NULL"
             ).fetchone()[0] if receipts_table else -1
@@ -441,7 +568,8 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                                       {"public_code"}.issubset(user_columns) and
                                       {"course_code", "subject_code"}.issubset(course_columns) and
                                       {"room_name", "teacher_id"}.issubset(class_columns) and
-                                      teacher_nullable and bool(receipts_table) and payments_missing_receipts == 0 and
+                                      teacher_nullable and bool(receipts_table) and bool(verification_table) and
+                                      payments_missing_receipts == 0 and
                                       len(COURSE_CATALOG) == 8 and invalid_active == 0 and missing_codes == 0 and new_migrations == 3,
                 "admin_count": admin_count,
                 "active_admin_count": active_admin_count,
