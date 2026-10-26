@@ -72,6 +72,10 @@ class PurchaseJourneyTests(unittest.TestCase):
         self.assertEqual(alerts.body["pending_count"], 1)
         self.assertEqual(alerts.body["pending_payment_claims"][0]["student_name"], "Student One")
         self.assertEqual(alerts.body["pending_payment_claims"][0]["invoice_number"], invoice["invoice_number"])
+        verification = self.call("POST", f"/api/admin/payment-claims/{claim.body['claim_id']}/verification",
+                                 {"verdict": "correct", "bank_confirmed": True},
+                                 cookie=self.admin_cookie, csrf=self.admin_csrf)
+        self.assertEqual(verification.status, 200, verification.body)
         approve = self.call("POST", f"/api/admin/payment-claims/{claim.body['claim_id']}/approve",
                             {}, cookie=self.admin_cookie, csrf=self.admin_csrf)
         self.assertEqual(approve.status, 200, approve.body)

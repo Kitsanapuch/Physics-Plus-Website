@@ -199,6 +199,10 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertEqual(alerts.json["pending_payment_claims"][0]["student_name"], "Example Student")
         self.assertEqual(alerts.json["pending_payment_claims"][0]["amount_satang"], 175000)
         self.assertNotIn("guardian_phone", str(alerts.json))
+        verification = admin.post(f"/api/admin/payment-claims/{claim.json['claim_id']}/verification",
+                                  base_url=self.base_url, headers=admin_headers,
+                                  json={"verdict": "correct", "bank_confirmed": True})
+        self.assertEqual(verification.status_code, 200, verification.json)
         approved = admin.post(f"/api/admin/payment-claims/{claim.json['claim_id']}/approve",
                               base_url=self.base_url, headers=admin_headers, json={})
         self.assertEqual(approved.status_code, 200, approved.json)
@@ -259,6 +263,10 @@ class DeploymentPackageTests(unittest.TestCase):
         self.assertEqual(claim.status_code, 201, claim.json)
         self.assertEqual(claim.json["amount_satang"], 300_000)
         self.assertEqual(len(student.get("/api/student/dashboard", base_url=self.base_url).json["receipts"]), 1)
+        verification = admin.post(f"/api/admin/payment-claims/{claim.json['claim_id']}/verification",
+                                  base_url=self.base_url, headers=admin_headers,
+                                  json={"verdict": "correct", "bank_confirmed": True})
+        self.assertEqual(verification.status_code, 200, verification.json)
         approval = admin.post(f"/api/admin/payment-claims/{claim.json['claim_id']}/approve",
                               base_url=self.base_url, headers=admin_headers, json={})
         self.assertEqual(approval.status_code, 200, approval.json)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -19,7 +20,7 @@ import threading
 import time
 import uuid
 import zlib
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
@@ -33,6 +34,8 @@ SESSION_SECONDS = 7 * 24 * 3600
 MAX_BODY = 64 * 1024
 MAX_SLIP_BYTES = 850 * 1024
 MAX_SLIP_REQUEST = 1_200_000
+MAX_QR_IMAGE_PIXELS = 20_000_000
+MAX_QR_PAYLOAD_CHARS = 20_000
 EMAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+\Z", re.ASCII)
 EMAIL_DOMAIN_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -175,6 +178,92 @@ def valid_payment_image(content: bytes, mime_type: str) -> bool:
             return 0 < width <= 10000 and 0 < height <= 10000
         return True
     return False
+
+
+def _emv_qr_checksum_valid(payload: str) -> bool:
+    """Validate TLV framing and CRC only; it does not validate a bank transfer."""
+    try:
+        raw = payload.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    cursor = 0
+    seen: set[bytes] = set()
+    while cursor < len(raw):
+        if cursor + 4 > len(raw) or not raw[cursor:cursor + 4].isdigit():
+            return False
+        tag = raw[cursor:cursor + 2]
+        length = int(raw[cursor + 2:cursor + 4])
+        if tag in seen or cursor + 4 + length > len(raw):
+            return False
+        seen.add(tag)
+        cursor += 4 + length
+    if cursor != len(raw) or raw[-8:-4] != b"6304":
+        return False
+    crc = 0xFFFF
+    for value in raw[:-4]:
+        crc ^= value << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return f"{crc:04X}".encode("ascii") == raw[-4:].upper()
+
+
+def inspect_slip_qr(content: bytes) -> dict:
+    """Decode a QR locally without opening its URL or contacting a bank."""
+    unavailable = {"status": "unavailable", "payload_type": None, "checksum_valid": None,
+                   "payload_fingerprint": None,
+                   "message": "ระบบอ่าน QR ยังไม่พร้อม โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    try:
+        from PIL import Image, UnidentifiedImageError
+        import zxingcpp
+    except ImportError:
+        return unavailable
+    try:
+        with Image.open(io.BytesIO(content)) as source:
+            if source.width * source.height > MAX_QR_IMAGE_PIXELS:
+                return {**unavailable, "status": "unreadable",
+                        "message": "ภาพมีความละเอียดสูงเกินสำหรับอ่าน QR โปรดตรวจด้วยตนเอง"}
+            source.thumbnail((2048, 2048))
+            image = source.convert("RGB")
+        symbols = zxingcpp.read_barcodes(image, formats=zxingcpp.BarcodeFormat.QRCode)
+    except (UnidentifiedImageError, OSError, ValueError, RuntimeError):
+        return {**unavailable, "status": "unreadable",
+                "message": "อ่าน QR จากภาพนี้ไม่ได้ โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    except Exception:
+        # Native image decoders can reject malformed input unexpectedly. Keep
+        # the payment claim reviewable without treating a decode error as proof
+        # that the transfer failed.
+        return {**unavailable, "status": "unreadable",
+                "message": "อ่าน QR จากภาพนี้ไม่ได้ โปรดตรวจสลิปและรายการเงินเข้าธนาคารด้วยตนเอง"}
+    if not symbols:
+        return {**unavailable, "status": "not_found",
+                "message": "ไม่พบ QR ที่อ่านได้ในภาพ โปรดตรวจสลิปด้วยตนเอง"}
+    if len(symbols) != 1:
+        return {**unavailable, "status": "invalid",
+                "message": "พบ QR มากกว่าหนึ่งรายการ จึงระบุรายการโอนจาก QR ไม่ได้"}
+    payload = symbols[0].text
+    if not isinstance(payload, str) or not payload or len(payload) > MAX_QR_PAYLOAD_CHARS:
+        return {**unavailable, "status": "invalid",
+                "message": "QR ไม่มีข้อความที่อ่านได้หรือมีข้อมูลยาวผิดปกติ"}
+    fingerprint = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    result = {"status": "decoded", "payload_type": "text", "checksum_valid": None,
+              "payload_fingerprint": fingerprint,
+              "message": "อ่าน QR ได้ แต่รูปแบบนี้ไม่ยืนยันว่ามีเงินเข้าบัญชี"}
+    if payload.startswith("000201") or payload.startswith("000202"):
+        valid = _emv_qr_checksum_valid(payload)
+        return {**result, "status": "decoded" if valid else "invalid",
+                "payload_type": "emv_payment", "checksum_valid": valid,
+                "message": ("QR ชำระเงินผ่านการตรวจรูปแบบและ CRC แต่ไม่ยืนยันว่าโอนเงินจริง"
+                            if valid else "QR ชำระเงินมีรูปแบบหรือ CRC ไม่ถูกต้อง โปรดตรวจด้วยตนเอง")}
+    if payload.lower().startswith(("http://", "https://")):
+        try:
+            parsed = urlsplit(payload)
+        except ValueError:
+            return {**result, "status": "invalid", "payload_type": "url",
+                    "message": "รูปแบบลิงก์ใน QR ไม่ถูกต้อง โปรดตรวจสลิปด้วยตนเอง"}
+        if parsed.hostname:
+            return {**result, "payload_type": "url",
+                    "message": "อ่าน QR แบบลิงก์ได้ ระบบไม่เปิดลิงก์และยังไม่ยืนยันว่าโอนเงินจริง"}
+    return result
 
 
 def eligible_teacher(conn: sqlite3.Connection, teacher_id: str) -> bool:
@@ -544,6 +633,17 @@ CREATE TABLE IF NOT EXISTS code_counters (
 );
 """
 SCHEMA += SHEET_SYNC_SCHEMA
+
+SLIP_VERIFICATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS payment_claim_verifications (
+  claim_id TEXT PRIMARY KEY REFERENCES payment_claims(id),
+  verdict TEXT NOT NULL CHECK(verdict IN ('correct','incorrect')),
+  note TEXT,
+  reviewed_by TEXT NOT NULL REFERENCES users(id),
+  reviewed_at INTEGER NOT NULL
+);
+"""
+SCHEMA += SLIP_VERIFICATION_SCHEMA
 
 PORTAL_FEATURE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS course_formats (
@@ -1049,6 +1149,8 @@ class PhysicsPlusApp:
             self.allowed_origins.add(f"http://127.0.0.1:{parsed.port or 80}")
         self.static_dir = Path(static_dir).resolve() if static_dir else None
         self.limiter = RateLimiter()
+        self._slip_qr_cache: OrderedDict[str, dict] = OrderedDict()
+        self._slip_qr_cache_lock = threading.Lock()
         self._init_db()
 
     def connect(self) -> sqlite3.Connection:
@@ -1587,6 +1689,12 @@ class PhysicsPlusApp:
         if method == "GET" and slip_match:
             self._require_role(user, "admin")
             return self._payment_slip(conn, slip_match.group(1))
+        verification_match = re.fullmatch(r"/api/admin/payment-claims/([0-9a-f]{32})/verification", path)
+        if verification_match and method in {"GET", "POST"}:
+            self._require_role(user, "admin")
+            claim_id = verification_match.group(1)
+            return (self._payment_claim_verification(conn, claim_id) if method == "GET" else
+                    self._set_payment_claim_verification(conn, user, claim_id, data))
         receipt_match = re.fullmatch(r"/api/receipts/([0-9a-f]{32})", path)
         if method == "GET" and receipt_match:
             return self._receipt(conn, user, receipt_match.group(1))
@@ -2037,6 +2145,122 @@ class PhysicsPlusApp:
             fail(404, "slip_not_found", "Payment slip not found")
         return Response(200, {"mime_type": row["mime_type"],
                               "slip_base64": base64.b64encode(row["content"]).decode("ascii")})
+
+    def _slip_qr_result(self, content: bytes) -> dict:
+        fingerprint = hashlib.sha256(content).hexdigest()
+        with self._slip_qr_cache_lock:
+            if fingerprint in self._slip_qr_cache:
+                self._slip_qr_cache.move_to_end(fingerprint)
+                return self._slip_qr_cache[fingerprint]
+        result = inspect_slip_qr(content)
+        with self._slip_qr_cache_lock:
+            self._slip_qr_cache[fingerprint] = result
+            self._slip_qr_cache.move_to_end(fingerprint)
+            if len(self._slip_qr_cache) > 64:
+                self._slip_qr_cache.popitem(last=False)
+        return result
+
+    def _claim_precheck(self, conn: sqlite3.Connection, claim: sqlite3.Row) -> dict:
+        """Check stored evidence and invoice consistency, never bank settlement."""
+        slip = conn.execute(
+            "SELECT mime_type,content,sha256 FROM payment_slips WHERE claim_id=?",
+            (claim["id"],),
+        ).fetchone()
+        slip_ok = bool(slip and slip["content"] and
+                       hmac.compare_digest(hashlib.sha256(slip["content"]).hexdigest(), slip["sha256"]) and
+                       valid_payment_image(slip["content"], slip["mime_type"]))
+        reference_ok = bool(slip_ok and claim["reference"] ==
+                            "SLIP-" + slip["sha256"][:32].upper())
+        duplicate = bool(conn.execute(
+            "SELECT 1 FROM payment_claims WHERE id!=? AND reference=? COLLATE NOCASE LIMIT 1",
+            (claim["id"], claim["reference"]),
+        ).fetchone() or conn.execute(
+            "SELECT 1 FROM payments WHERE reference=? COLLATE NOCASE AND claim_id IS NOT ? LIMIT 1",
+            (claim["reference"], claim["id"]),
+        ).fetchone())
+        invoice = conn.execute(
+            "SELECT id,student_id,amount_satang,status FROM invoices WHERE id=?",
+            (claim["invoice_id"],),
+        ).fetchone()
+        invoice_ok = bool(invoice and invoice["student_id"] == claim["student_id"] and
+                          invoice["status"] not in {"void", "paid"})
+        remaining = (invoice["amount_satang"] - conn.execute(
+            "SELECT COALESCE(SUM(amount_satang),0) FROM payments WHERE invoice_id=?",
+            (claim["invoice_id"],),
+        ).fetchone()[0]) if invoice else 0
+        amount_ok = bool(invoice_ok and remaining > 0 and claim["amount_satang"] == remaining)
+        checks = [
+            ("slip_file", slip_ok, "ไฟล์สลิปเป็นรูปภาพที่อ่านได้และไม่ถูกแก้ไขหลังอัปโหลด"),
+            ("slip_reference", reference_ok, "รหัสอ้างอิงตรงกับไฟล์ที่แนบ"),
+            ("duplicate", not duplicate, "ไม่พบการใช้สลิปหรือรหัสอ้างอิงซ้ำ"),
+            ("invoice_owner", invoice_ok, "ใบแจ้งชำระเป็นของนักเรียนรายนี้และยังใช้งานได้"),
+            ("invoice_balance", amount_ok, "ยอดแจ้งชำระตรงกับยอดค้างปัจจุบัน"),
+        ]
+        passed = all(ok for _, ok, _ in checks)
+        qr = (self._slip_qr_result(slip["content"]) if slip_ok else
+              {"status": "unreadable", "payload_type": None, "checksum_valid": None,
+               "payload_fingerprint": None, "message": "ไฟล์สลิปไม่ผ่านการตรวจ จึงอ่าน QR ไม่ได้"})
+        rendered_checks = [{"code": code, "status": "passed" if ok else "failed", "message": message}
+                           for code, ok, message in checks]
+        rendered_checks.append({"code": "qr_code",
+                                "status": "passed" if qr["status"] == "decoded" else "warning",
+                                "message": qr["message"]})
+        return {
+            "status": "passed" if passed else "failed",
+            "checks": rendered_checks,
+            "qr": qr,
+            "message": ("ข้อมูลไฟล์และยอดค้างผ่านการตรวจเบื้องต้น แต่ยังต้องตรวจว่าเงินเข้าบัญชีธนาคารจริง"
+                        if passed else "ข้อมูลสลิปหรือใบแจ้งชำระไม่ตรง กรุณาตรวจรายการที่ไม่ผ่านก่อนอนุมัติ"),
+        }
+
+    def _payment_claim_verification(self, conn: sqlite3.Connection, claim_id: str) -> Response:
+        claim = conn.execute("SELECT * FROM payment_claims WHERE id=?", (claim_id,)).fetchone()
+        if not claim:
+            fail(404, "claim_not_found", "Payment claim not found")
+        precheck = self._claim_precheck(conn, claim)
+        review = conn.execute(
+            "SELECT v.verdict,v.note,v.reviewed_at,u.name reviewer_name "
+            "FROM payment_claim_verifications v JOIN users u ON u.id=v.reviewed_by "
+            "WHERE v.claim_id=?", (claim_id,),
+        ).fetchone()
+        verification = {"status": review["verdict"] if review else "needs_review",
+                        "note": review["note"] if review else None,
+                        "reviewed_at": review["reviewed_at"] if review else None,
+                        "reviewer_name": review["reviewer_name"] if review else None}
+        return Response(200, {"claim_id": claim_id, "status": claim["status"],
+                              "precheck": precheck, "verification": verification,
+                              "can_approve": claim["status"] == "pending" and
+                              precheck["status"] == "passed" and verification["status"] == "correct"})
+
+    def _set_payment_claim_verification(self, conn: sqlite3.Connection, user: sqlite3.Row,
+                                        claim_id: str, data: dict) -> Response:
+        claim = conn.execute("SELECT * FROM payment_claims WHERE id=? AND status='pending'", (claim_id,)).fetchone()
+        if not claim:
+            fail(404, "claim_not_pending", "Pending payment claim not found")
+        verdict = data.get("verdict")
+        if verdict not in {"correct", "incorrect"}:
+            fail(400, "invalid_verdict", "Choose correct or incorrect")
+        note = (optional_str(data, "note", 250) if verdict == "correct" else
+                required_str(data, "note", 250))
+        if note and any(ord(char) < 32 and char not in "\n\t" for char in note):
+            fail(400, "invalid_note", "Review note contains invalid characters")
+        precheck = self._claim_precheck(conn, claim)
+        if verdict == "correct":
+            if precheck["status"] != "passed":
+                fail(409, "slip_precheck_failed", "Resolve the failed slip checks before marking correct")
+            if data.get("bank_confirmed") is not True:
+                fail(400, "bank_confirmation_required", "Confirm the bank credit independently before marking correct")
+        checked_at = now()
+        conn.execute(
+            "INSERT INTO payment_claim_verifications(claim_id,verdict,note,reviewed_by,reviewed_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(claim_id) DO UPDATE SET "
+            "verdict=excluded.verdict,note=excluded.note,reviewed_by=excluded.reviewed_by,"
+            "reviewed_at=excluded.reviewed_at",
+            (claim_id, verdict, note, user["id"], checked_at),
+        )
+        self.audit(conn, user["id"], "payment_claim", claim_id, "verify_slip",
+                   {"verdict": verdict, "precheck_status": precheck["status"]})
+        return self._payment_claim_verification(conn, claim_id)
 
     def _teacher_dashboard(self, conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
         rows = conn.execute("SELECT s.id,s.room_name,s.starts_at,s.ends_at,s.status,c.id course_id,c.course_code,c.title,c.subject,c.level,t.id time_entry_id,t.status time_status,t.actual_start,t.actual_end,t.amount_satang,t.rejection_reason,CASE WHEN s.status='scheduled' AND s.starts_at>? AND t.id IS NULL AND NOT EXISTS(SELECT 1 FROM attendance a WHERE a.session_id=s.id) THEN 1 ELSE 0 END can_cancel FROM class_sessions s JOIN courses c ON c.id=s.course_id LEFT JOIN time_entries t ON t.session_id=s.id WHERE s.teacher_id=? ORDER BY s.starts_at DESC LIMIT 200", (now(), user["id"])).fetchall()
@@ -2532,9 +2756,17 @@ class PhysicsPlusApp:
         claims = conn.execute(
             "SELECT pc.id,pc.invoice_id,pc.amount_satang,pc.reference,pc.status,"
             "u.name student_name,u.public_code student_code,i.invoice_number,"
-            "c.title course_title,c.course_code "
+            "c.title course_title,c.course_code,"
+            "COALESCE(v.verdict,'needs_review') verification_status,"
+            "CASE WHEN ps.claim_id IS NOT NULL AND pc.reference=('SLIP-'||upper(substr(ps.sha256,1,32))) "
+            "AND i.student_id=pc.student_id "
+            "AND i.status NOT IN ('paid','void') AND pc.amount_satang>0 "
+            "AND pc.amount_satang=i.amount_satang-(SELECT COALESCE(SUM(p.amount_satang),0) "
+            "FROM payments p WHERE p.invoice_id=i.id) THEN 'passed' ELSE 'failed' END precheck_status "
             "FROM payment_claims pc JOIN users u ON u.id=pc.student_id "
             "JOIN invoices i ON i.id=pc.invoice_id "
+            "LEFT JOIN payment_slips ps ON ps.claim_id=pc.id "
+            "LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id "
             "LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id "
             "LEFT JOIN enrollments e ON e.id=COALESCE(i.enrollment_id,m.enrollment_id) "
             "LEFT JOIN courses c ON c.id=e.course_id "
@@ -2562,10 +2794,18 @@ class PhysicsPlusApp:
         claims = conn.execute(
             "SELECT pc.id,pc.invoice_id,i.invoice_number,pc.amount_satang,"
             "pc.reference,pc.status,pc.created_at,u.name student_name,"
-            "u.public_code student_code,c.title course_title,c.course_code "
+            "u.public_code student_code,c.title course_title,c.course_code,"
+            "COALESCE(v.verdict,'needs_review') verification_status,"
+            "CASE WHEN ps.claim_id IS NOT NULL AND pc.reference=('SLIP-'||upper(substr(ps.sha256,1,32))) "
+            "AND i.student_id=pc.student_id "
+            "AND i.status NOT IN ('paid','void') AND pc.amount_satang>0 "
+            "AND pc.amount_satang=i.amount_satang-(SELECT COALESCE(SUM(p.amount_satang),0) "
+            "FROM payments p WHERE p.invoice_id=i.id) THEN 'passed' ELSE 'failed' END precheck_status "
             "FROM payment_claims pc "
             "JOIN invoices i ON i.id=pc.invoice_id "
             "JOIN users u ON u.id=pc.student_id "
+            "LEFT JOIN payment_slips ps ON ps.claim_id=pc.id "
+            "LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id "
             "LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id "
             "LEFT JOIN enrollments e ON e.id=COALESCE(i.enrollment_id,m.enrollment_id) "
             "LEFT JOIN courses c ON c.id=e.course_id "
@@ -2667,7 +2907,7 @@ class PhysicsPlusApp:
             "invoices": "SELECT i.id,i.invoice_number,u.name student_name,u.email student_email,i.description,i.amount_satang,m.period individual_period,COALESCE((SELECT SUM(b.minutes) FROM individual_billing_lines b WHERE b.invoice_id=i.id),0) individual_minutes,i.status,i.due_date,i.created_at FROM invoices i JOIN users u ON u.id=i.student_id LEFT JOIN individual_monthly_invoices m ON m.invoice_id=i.id ORDER BY i.created_at,i.id",
             "payments": "SELECT p.id,i.invoice_number,p.amount_satang,p.method,p.reference,p.recorded_at FROM payments p JOIN invoices i ON i.id=p.invoice_id ORDER BY p.recorded_at,p.id",
             "receipts": "SELECT r.id,r.receipt_number,r.invoice_number,r.student_name,r.enrollment_id,r.course_code,r.course_title,r.description,r.amount_satang,r.method,r.reference,r.paid_at,r.issued_at FROM receipts r ORDER BY r.paid_at,r.id",
-            "claims": "SELECT pc.id,i.invoice_number,u.name student_name,pc.amount_satang,pc.reference,pc.status,pc.created_at,pc.reviewed_at FROM payment_claims pc JOIN invoices i ON i.id=pc.invoice_id JOIN users u ON u.id=pc.student_id ORDER BY pc.created_at,pc.id",
+            "claims": "SELECT pc.id,i.invoice_number,u.name student_name,pc.amount_satang,pc.reference,pc.status,pc.created_at,pc.reviewed_at,COALESCE(v.verdict,'needs_review') verification_status,v.note verification_note,v.reviewed_at verification_reviewed_at,reviewer.name verification_reviewer_name FROM payment_claims pc JOIN invoices i ON i.id=pc.invoice_id JOIN users u ON u.id=pc.student_id LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id LEFT JOIN users reviewer ON reviewer.id=v.reviewed_by ORDER BY pc.created_at,pc.id",
             "teaching": "SELECT t.id,u.name teacher_name,c.title course_title,t.actual_start,t.actual_end,t.break_minutes,t.payable_minutes,t.student_count,t.rate_satang_per_hour,t.amount_satang,t.status,t.submitted_at,t.reviewed_at FROM time_entries t JOIN users u ON u.id=t.teacher_id JOIN class_sessions s ON s.id=t.session_id JOIN courses c ON c.id=s.course_id ORDER BY t.submitted_at,t.id",
             "payroll": "SELECT p.id,u.name teacher_name,p.period,p.status,p.total_satang,p.finalized_at,p.paid_at,p.payment_reference,p.created_at FROM payroll_runs p JOIN users u ON u.id=p.teacher_id ORDER BY p.created_at,p.id",
             "rates": "SELECT id,teacher_label,subject,level,min_students,max_students,rate_satang_per_hour,effective_from,effective_to,state,source_note FROM rate_rules ORDER BY level,min_students,id",
@@ -3404,6 +3644,13 @@ class PhysicsPlusApp:
             event_id = self.audit(conn, user["id"], "payment_claim", claim_id, "reject")
             self.enqueue_notice(conn, event_id, "payment_claim_rejected", claim["student_id"])
             return Response(200, {"claim_id": claim_id, "status": "rejected"})
+        review = conn.execute(
+            "SELECT verdict FROM payment_claim_verifications WHERE claim_id=?", (claim_id,)
+        ).fetchone()
+        if not review or review["verdict"] != "correct":
+            fail(409, "verification_required", "Confirm the bank credit and mark the slip correct before approving")
+        if self._claim_precheck(conn, claim)["status"] != "passed":
+            fail(409, "slip_precheck_failed", "The slip or invoice changed; review the failed checks before approving")
         payment = self._record_payment(conn, user, {"invoice_id": claim["invoice_id"], "amount_satang": claim["amount_satang"], "method": "claim_verified", "reference": claim["reference"]}, claim_id)
         conn.execute("UPDATE payment_claims SET status='approved',reviewed_by=?,reviewed_at=? WHERE id=?", (user["id"], now(), claim_id))
         event_id = self.audit(conn, user["id"], "payment_claim", claim_id, "approve", {"payment_id": payment.body["payment_id"]})

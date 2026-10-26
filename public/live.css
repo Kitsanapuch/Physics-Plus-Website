@@ -70,6 +70,41 @@ body .new-section>.panel{margin-bottom:20px}
 .payment-history .receipt-panel{margin-top:0}
 .slip-download{display:inline-flex;align-items:center;justify-content:center;min-height:30px;padding:6px 10px;border:1px solid #dac86e;border-radius:8px;background:#fff7ce;color:#4b3a12;font-size:10px;font-weight:700;text-decoration:none;white-space:nowrap}
 .slip-download:hover,.slip-download:focus-visible{background:#ffe778}
+#admin-finance>.grid{grid-template-columns:minmax(0,1fr)}
+#admin-claims table{min-width:720px}
+.claim-review-cell{min-width:205px;max-width:290px;white-space:normal;vertical-align:middle}
+.claim-review-badge{display:block;width:fit-content;max-width:100%;margin:3px 0;padding:5px 9px;border:1px solid #ddd9ca;border-radius:8px;background:#f8f7f0;color:#5b5749;font-size:10px;font-weight:750;line-height:1.45;white-space:normal}
+.claim-review-badge[data-state="passed"],.claim-review-badge[data-state="correct"]{border-color:#b9d5bb;background:#edf8ef;color:#2e6139}
+.claim-review-badge[data-state="failed"],.claim-review-badge[data-state="incorrect"]{border-color:#efc5b9;background:#fff1ed;color:#9a3429}
+.claim-review-hint{display:block;margin-top:5px;color:#76694b;font-size:10px;line-height:1.5}
+.claim-row-actions{min-width:215px;white-space:normal}
+.claim-row-actions button:disabled{opacity:.5;cursor:not-allowed}
+body .live-dialog.claim-review-dialog{width:min(710px,calc(100vw - 24px));max-height:calc(100vh - 32px);overflow:auto}
+.claim-review-summary{margin-top:15px;padding:14px 16px;border:1px solid #e7ca8b;border-radius:11px;background:#fff8e7;color:#614f23;line-height:1.6}
+.claim-review-summary[data-state="passed"]{border-color:#b9d5bb;background:#f2f9f1;color:#315e36}
+.claim-review-summary[data-state="failed"]{border-color:#ecc1b5;background:#fff1ec;color:#8e3d2e}
+.claim-review-summary strong{display:block;font-size:13px}
+.claim-review-summary p{margin:6px 0 4px;font-size:12px}
+.claim-review-summary small{display:block;font-size:10px}
+.claim-qr-result{display:grid;gap:4px;margin-top:12px;padding:11px 13px;border:1px solid #dccd9a;border-radius:9px;background:#fffaf0;color:#5f522c;line-height:1.5}
+.claim-qr-result[data-state="decoded"]{border-color:#b8cba8;background:#f6faef;color:#425d39}
+.claim-qr-result[data-state="invalid"]{border-color:#e8b9a9;background:#fff3ee;color:#8d3e2c}
+.claim-qr-result strong{font-size:12px}
+.claim-qr-result p{margin:0;font-size:11px}
+.claim-qr-result small{font-size:10px}
+.claim-review-checks{display:grid;gap:5px;margin:13px 0;padding:0;list-style:none;font-size:11px;line-height:1.5}
+.claim-review-checks li{padding:7px 10px;border-radius:7px;background:#f2f8f0;color:#346543}
+.claim-review-checks li[data-state="failed"]{background:#fff0eb;color:#963b2d}
+.claim-review-checks li[data-state="warning"]{background:#fff7e8;color:#805c1f}
+.claim-review-history{display:grid;gap:3px;margin:14px 0;padding:10px 12px;border-left:3px solid #dec252;background:#faf8ee;font-size:11px;line-height:1.5;overflow-wrap:anywhere}
+.claim-slip-preview{display:grid;justify-items:start;gap:8px;margin-top:14px}
+.claim-slip-preview img{display:block;max-width:100%;max-height:38vh;margin:0 auto;border:1px solid #ded8c3;border-radius:9px;background:#e8e8e3;object-fit:contain}
+.claim-slip-preview img[hidden]{display:none}
+.claim-review-form{margin-top:18px;padding-top:15px;border-top:1px solid #e9e4d3}
+.claim-review-form .claim-bank-confirmation{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;border:1px solid #ded1a2;border-radius:9px;background:#fff9e7;color:#514728;font-size:11px;line-height:1.55;cursor:pointer}
+.claim-review-form .claim-bank-confirmation input[type="checkbox"]{flex:none;width:17px;height:17px;min-width:17px;margin:0;accent-color:#736015}
+.claim-review-form textarea{min-height:80px}
+.claim-review-form .live-modal-feedback{margin:0}
 @media(max-width:700px){.payment-invoice-card{grid-template-columns:1fr auto;gap:10px}.payment-invoice-card button{grid-column:1/-1;justify-self:stretch}.payment-invoice-amount{font-size:19px}.payment-due{align-items:flex-start;flex-direction:column}.payment-history{grid-template-columns:1fr}}
 .sheet-sync-status{margin-top:16px;padding:13px 15px;border:1px solid #e4dfcc;border-radius:10px;background:#fbfaf4;color:#403d31;font-size:12px;line-height:1.6}
 .sheet-sync-status[data-state="ready"]{border-color:#c4dcb6;background:#f1f8ed;color:#32633a}

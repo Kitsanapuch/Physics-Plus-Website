@@ -634,7 +634,7 @@
       <section id="overview" class="new-section"><div class="stats"><div class="stat"><span>คงค้างในใบแจ้งยอดล่าสุด</span><strong id="admin-outstanding">—</strong><small>จาก 100 รายการล่าสุดที่แสดง</small></div><div class="stat"><span>รายการแจ้งชำระรอตรวจ</span><strong id="admin-claim-count">—</strong><small>ตรวจเงินก่อนยืนยัน</small></div><div class="stat"><span>เวลาสอนรอตรวจ</span><strong id="admin-time-count">—</strong><small>ต้องเช็กชื่อครบและมีอัตราที่ยืนยัน</small></div></div></section>
       <section id="admin-staff" class="panel new-section"><div class="panel-head staff-panel-head"><div><h2>ทะเบียนครูผู้สอน</h2><p class="muted">จัดการครูเหมือนทะเบียนพนักงาน ผู้ดูแลเลือกครูประจำคอร์สและตารางสอนได้แม้ครูยังไม่มีบัญชีเข้าใช้ระบบ</p></div><button type="button" class="primary" data-action="staff-add">+ เพิ่มครู</button></div><div class="staff-summary"><span id="staff-total">ครูทั้งหมด — คน</span><span id="staff-pending">รอเปิดบัญชี — คน</span></div><label class="admin-search-label" for="admin-staff-search">ค้นหาชื่อหรือรหัสครู<input id="admin-staff-search" type="search" autocomplete="off" placeholder="ค้นหารายชื่อครู"></label><div class="tablewrap"><table><thead><tr><th>รหัสครู</th><th>ชื่อครู</th><th>การเข้าใช้ระบบ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-staff-rows"></tbody></table></div><p class="foot">การเปิดบัญชีครูต้องใช้อีเมลจริงของครู ระบบจะแสดงรหัสผ่านชั่วคราวเพียงครั้งเดียว</p></section>
       <section id="admin-accounts" class="panel new-section"><div class="panel-head"><div><h2>จัดการบัญชีนักเรียน</h2><p class="muted">สร้างบัญชี รีเซ็ตรหัสผ่านชั่วคราว และเปิดหรือปิดสิทธิ์เข้าใช้ระบบ</p></div></div><form data-action="admin-user-create" class="live-form live-form-grid"><label>ชื่อ–นามสกุล<input name="name" required maxlength="120"></label><label>อีเมล<input name="email" type="email" required autocomplete="off"></label><input name="role" type="hidden" value="student"><button type="submit" class="primary">สร้างบัญชีนักเรียน</button></form><p class="foot">รหัสผ่านชั่วคราวจะแสดงเพียงครั้งเดียว ผู้รับต้องเปลี่ยนรหัสเมื่อเข้าสู่ระบบครั้งแรก</p><label class="admin-search-label" for="admin-user-search">ค้นหาชื่อ รหัส หรืออีเมล<input id="admin-user-search" type="search" autocomplete="off" placeholder="พิมพ์เพื่อค้นหาบัญชี"></label><div class="tablewrap"><table><thead><tr><th>รหัสประจำตัว</th><th>ชื่อ / บัญชี</th><th>ประเภท</th><th>สถานะ</th><th>รหัสชั่วคราว</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-user-rows"></tbody></table></div></section>
-      <section id="admin-finance" class="new-section"><section class="panel"><h2>แจ้งยอดค่าเรียนคอร์สกลุ่ม</h2><p class="muted">นักเรียนที่ยืนยันซื้อคอร์สกลุ่มจะได้รับยอดตามราคาคอร์ส คอร์สตัวต่อตัวสรุปแยกตามชั่วโมงสอนจริงเมื่อสิ้นเดือน</p><form data-action="admin-invoice" class="live-form live-form-grid"><label>นักเรียน / คอร์สกลุ่มที่ยังไม่แจ้งยอด<select name="enrollment_id" id="invoice-enrollment" required></select></label><label>ค่าเรียนที่แจ้ง (บาท)<input name="amount" id="invoice-amount" inputmode="decimal" required placeholder="เลือกคอร์สเพื่อดึงราคา"></label><label>วันครบกำหนด<input name="due_date" type="date" required></label><label>รายละเอียด<input name="description" maxlength="250" placeholder="เช่น ค่าเรียนคอร์สคณิตศาสตร์"></label><button type="submit" class="primary">แจ้งยอดให้นักเรียน</button></form><p class="foot">บัญชีรับโอนจะแสดงให้นักเรียนเฉพาะเมื่อเปิดรายละเอียดชำระเงินของคำสั่งซื้อ</p></section><div class="grid"><section class="panel"><h2>รายการแจ้งยอด</h2><div class="tablewrap"><table><thead><tr><th>เลขที่ / นักเรียน</th><th>ยอด</th><th>คงเหลือ</th><th>ครบกำหนด</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-invoices"></tbody></table></div></section><section class="panel"><h2>รายการแจ้งชำระรอตรวจ</h2><div class="tablewrap"><table><thead><tr><th>นักเรียน / อ้างอิง</th><th>ยอด</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-claims"></tbody></table></div></section></div><section class="panel"><h2>บันทึกการรับเงินโดยผู้ดูแล</h2><p class="muted">สำหรับเงินที่ตรวจสอบแล้ว กรุณาใช้เลขอ้างอิงที่ตรวจยืนยันได้</p><form data-action="admin-payment" class="live-form live-form-grid"><label>ใบแจ้งยอด<select name="invoice_id" id="payment-invoice" required></select></label><label>จำนวนที่ได้รับ (บาท)<input name="amount" id="payment-amount" inputmode="decimal" required></label><label>วิธีรับเงิน<input name="method" required maxlength="30" placeholder="เช่น bank_transfer"></label><label>เลขอ้างอิง<input name="reference" required maxlength="120"></label><button type="submit" class="primary">บันทึกรับเงิน</button></form></section></section>
+      <section id="admin-finance" class="new-section"><section class="panel"><h2>แจ้งยอดค่าเรียนคอร์สกลุ่ม</h2><p class="muted">นักเรียนที่ยืนยันซื้อคอร์สกลุ่มจะได้รับยอดตามราคาคอร์ส คอร์สตัวต่อตัวสรุปแยกตามชั่วโมงสอนจริงเมื่อสิ้นเดือน</p><form data-action="admin-invoice" class="live-form live-form-grid"><label>นักเรียน / คอร์สกลุ่มที่ยังไม่แจ้งยอด<select name="enrollment_id" id="invoice-enrollment" required></select></label><label>ค่าเรียนที่แจ้ง (บาท)<input name="amount" id="invoice-amount" inputmode="decimal" required placeholder="เลือกคอร์สเพื่อดึงราคา"></label><label>วันครบกำหนด<input name="due_date" type="date" required></label><label>รายละเอียด<input name="description" maxlength="250" placeholder="เช่น ค่าเรียนคอร์สคณิตศาสตร์"></label><button type="submit" class="primary">แจ้งยอดให้นักเรียน</button></form><p class="foot">บัญชีรับโอนจะแสดงให้นักเรียนเฉพาะเมื่อเปิดรายละเอียดชำระเงินของคำสั่งซื้อ</p></section><div class="grid"><section class="panel"><h2>รายการแจ้งยอด</h2><div class="tablewrap"><table><thead><tr><th>เลขที่ / นักเรียน</th><th>ยอด</th><th>คงเหลือ</th><th>ครบกำหนด</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-invoices"></tbody></table></div></section><section class="panel" id="admin-claims"><h2>รายการแจ้งชำระรอตรวจ</h2><p class="muted">ระบบตรวจความสอดคล้องของข้อมูลสลิปเบื้องต้นเท่านั้น ผู้ดูแลต้องตรวจยอดที่เข้าบัญชีธนาคารจริงก่อนบันทึกว่า “ถูกต้อง” และยืนยันรับเงิน</p><div class="tablewrap"><table><thead><tr><th>นักเรียน / อ้างอิง</th><th>ยอด</th><th>ผลตรวจสลิป</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-claims-rows"></tbody></table></div></section></div><section class="panel"><h2>บันทึกการรับเงินโดยผู้ดูแล</h2><p class="muted">สำหรับเงินที่ตรวจสอบแล้ว กรุณาใช้เลขอ้างอิงที่ตรวจยืนยันได้</p><form data-action="admin-payment" class="live-form live-form-grid"><label>ใบแจ้งยอด<select name="invoice_id" id="payment-invoice" required></select></label><label>จำนวนที่ได้รับ (บาท)<input name="amount" id="payment-amount" inputmode="decimal" required></label><label>วิธีรับเงิน<input name="method" required maxlength="30" placeholder="เช่น bank_transfer"></label><label>เลขอ้างอิง<input name="reference" required maxlength="120"></label><button type="submit" class="primary">บันทึกรับเงิน</button></form></section></section>
       <section id="admin-teaching" class="panel new-section"><h2>ตรวจเวลาสอน</h2><p class="muted">เช็กชื่อครบทุกคนก่อนอนุมัติ ระบบจะใช้อัตราที่คุณยืนยันไว้</p><div class="tablewrap"><table><thead><tr><th>ครู / คอร์ส</th><th>เวลาสอนจริง</th><th>พัก</th><th>เข้าเรียน</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-times"></tbody></table></div></section>
       <section id="admin-rates" class="panel new-section"><h2>อัตราค่าจ้างครู</h2><p class="muted">อัตรากลางที่ยืนยันแล้วใช้คำนวณค่าจ้างทุกวิชาและทุกครูตามระดับชั้นกับจำนวนผู้เรียน 1–3, 4–6, 7–9 และ 10–13 คน หากมีข้อตกลงเฉพาะครูหรือวิชา ให้เพิ่มอัตราเฉพาะพร้อมแหล่งอ้างอิง</p><div class="tablewrap"><table><thead><tr><th>ขอบเขต / วิชา / ระดับ</th><th>ผู้เรียน</th><th>บาทต่อชั่วโมง</th><th>สถานะ</th><th>ที่มา / ข้อสังเกต</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-rates-rows"></tbody></table></div><details class="rate-create"><summary>เพิ่มอัตราค่าจ้างที่ตรวจสอบแล้ว</summary><form data-action="admin-rate-create" class="live-form live-form-grid"><label>ขอบเขต<select name="scope" id="rate-scope" required><option value="global">อัตรากลางทุกครู</option><option value="teacher">เฉพาะครู</option></select></label><label id="rate-teacher-field" hidden>ครู<select name="teacher_id" id="rate-teacher"></select></label><label id="rate-subject-field" hidden>วิชา<select name="subject" id="rate-subject" required><option value="all">ทุกวิชา</option><option value="science">วิทยาศาสตร์</option><option value="math">คณิตศาสตร์</option><option value="physics">ฟิสิกส์</option><option value="chemistry">เคมี</option><option value="biology">ชีววิทยา</option><option value="chemistry_biology">เคมี/ชีววิทยา</option><option value="english">อังกฤษ</option><option value="thai">ไทย</option><option value="social">สังคม</option><option value="other">อื่น ๆ</option></select></label><label>ระดับ<select name="level"><option value="middle">มัธยมต้น</option><option value="high">มัธยมปลาย</option></select></label><label>จำนวนนักเรียนต่ำสุด<input name="min_students" type="number" min="1" max="100" required></label><label>จำนวนนักเรียนสูงสุด<input name="max_students" type="number" min="1" max="100" required></label><label>บาทต่อชั่วโมง<input name="rate" inputmode="decimal" required></label><label>เริ่มใช้<input name="effective_from" type="date" required></label><label>สิ้นสุด (ถ้ามี)<input name="effective_to" type="date"></label><label class="wide-field">ที่มา/หลักฐานของอัตรา<input name="source_note" required maxlength="250" placeholder="เช่น แถวในชีตอัตราค่าจ้าง หรือข้อตกลงที่ยืนยันแล้ว"></label><button type="submit" class="primary">บันทึกอัตราที่ยืนยันแล้ว</button></form></details></section>
       <section id="admin-classroom" class="new-section"><section class="panel"><div class="panel-head"><div><h2>จัดห้องเรียนและตารางเรียน</h2><p class="muted">ผู้ดูแลเป็นผู้กำหนดห้อง ครู วันเวลา และรายชื่อนักเรียนทุกคน ไม่มีการจัดเข้าห้องอัตโนมัติ</p></div></div><form data-action="admin-class-create" class="live-form live-form-grid"><label>คอร์ส / รหัสวิชา<select name="course_id" id="class-course" required></select></label><label>ครูผู้สอน<select name="teacher_id" id="class-teacher" required></select></label><label>ห้องเรียน<select name="room_name" id="class-room" required></select></label><label>เริ่มเรียน (เวลาไทย)<input name="starts_at" type="datetime-local" required></label><label>เลิกเรียน (เวลาไทย)<input name="ends_at" type="datetime-local" required></label><fieldset class="class-roster-field wide-field"><legend>เลือกรายชื่อนักเรียนในห้อง</legend><p class="foot">แสดงเฉพาะผู้สมัครคอร์สที่เลือก กรุณาตรวจชื่อก่อนบันทึก</p><div id="admin-class-students" class="class-student-picker"></div></fieldset><button type="submit" class="primary">สร้างห้องเรียนตามที่จัด</button></form></section><section class="panel"><h2>ห้องเรียนทั้งหมด</h2><p class="muted">เปิดรายชื่อเพื่อดูผู้เรียน เปลี่ยนห้อง เวลา ครู หรือจัดรายชื่อใหม่ได้ก่อนคาบเริ่มและตามเงื่อนไขของระบบ</p><div class="tablewrap"><table><thead><tr><th>คอร์ส / รหัสวิชา</th><th>ห้อง</th><th>วันและเวลา</th><th>ครูผู้สอน</th><th>รายชื่อที่จัด</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-classes-rows"></tbody></table></div></section></section>
@@ -1656,6 +1656,152 @@
     }
   }
 
+  async function claimVerificationDialog(claimId) {
+    const claim = (state.data?.pending_payment_claims || []).find((item) => item.id === claimId);
+    if (!claim) throw new Error('ไม่พบรายการแจ้งชำระที่รอตรวจ');
+    const endpoint = `/api/admin/payment-claims/${claimId}/verification`;
+    const review = await api(endpoint);
+    const precheck = review.precheck || {};
+    const verified = review.verification || {};
+    const dialog = $('live-dialog');
+    dialog.replaceChildren();
+    dialog.classList.add('claim-review-dialog');
+    const heading = element('h2', '', `ตรวจสลิป · ${claim.student_name}`);
+    heading.id = 'claim-review-title';
+    dialog.setAttribute('aria-labelledby', heading.id);
+    dialog.append(heading, element('p', 'muted', `${claim.invoice_number || 'ใบแจ้งยอด'} · ${thaiMoney(claim.amount_satang)}`));
+    const summary = element('div', 'claim-review-summary');
+    summary.dataset.state = precheck.status === 'passed' ? 'passed' : 'failed';
+    summary.append(element('strong', '', precheck.status === 'passed'
+      ? 'ผลตรวจเบื้องต้น: ผ่าน' : 'ผลตรวจเบื้องต้น: ไม่ผ่าน'));
+    summary.append(element('p', '', precheck.message || 'ระบบยังไม่สามารถยืนยันข้อมูลสลิปเบื้องต้นได้'));
+    summary.append(element('small', '', 'ผลเบื้องต้นไม่ยืนยันว่ามีเงินเข้าบัญชี ผู้ดูแลต้องตรวจรายการเดินบัญชีจริง'));
+    dialog.append(summary);
+    const qr = precheck.qr || { status: 'unavailable', message: 'ยังไม่มีผลอ่าน QR จากเซิร์ฟเวอร์' };
+    const qrLabels = {
+      decoded: 'อ่าน QR ได้ — ยังไม่ยืนยันว่ามีการโอนจริง',
+      not_found: 'ไม่พบ QR ในสลิป',
+      invalid: 'ข้อมูล QR ไม่ถูกต้อง',
+      unreadable: 'อ่าน QR ไม่สำเร็จ',
+      unavailable: 'ยังตรวจ QR ไม่ได้'
+    };
+    const qrPanel = element('section', 'claim-qr-result');
+    qrPanel.dataset.state = qr.status || 'unavailable';
+    qrPanel.append(element('strong', '', qrLabels[qr.status] || qrLabels.unavailable));
+    qrPanel.append(element('p', '', qr.message || 'ผล QR ใช้ประกอบการตรวจเท่านั้น'));
+    if (qr.status === 'decoded' && qr.payload_type) {
+      const typeLabel = { emv_payment: 'รหัสชำระเงิน', url: 'ลิงก์', text: 'ข้อความ' }[qr.payload_type] || 'ข้อมูลทั่วไป';
+      qrPanel.append(element('small', '', `ประเภทข้อมูล: ${typeLabel}${qr.checksum_valid === true ? ' · checksum ผ่าน' : ''}`));
+    }
+    qrPanel.append(element('small', '', 'ระบบไม่เปิดลิงก์ใน QR และไม่ใช้ QR แทนการตรวจเงินเข้าบัญชีธนาคาร'));
+    dialog.append(qrPanel);
+    if (Array.isArray(precheck.checks) && precheck.checks.length) {
+      const checks = element('ul', 'claim-review-checks');
+      for (const check of precheck.checks) {
+        const item = element('li', '', `${check.status === 'passed' ? '✓' : check.status === 'warning' ? '!' : '✕'} ${check.message || check.code || 'ไม่ทราบผล'}`);
+        item.dataset.state = check.status === 'passed' ? 'passed' : check.status === 'warning' ? 'warning' : 'failed';
+        checks.append(item);
+      }
+      dialog.append(checks);
+    }
+    if (verified.status === 'correct' || verified.status === 'incorrect') {
+      const history = element('p', 'claim-review-history', `ผลตรวจที่บันทึกไว้: ${verified.status === 'correct' ? 'ถูกต้อง' : 'ไม่ถูกต้อง'}${verified.reviewer_name ? ` · ${verified.reviewer_name}` : ''}`);
+      if (verified.note) history.append(element('span', '', `เหตุผล: ${verified.note}`));
+      dialog.append(history);
+    }
+    if (claim.reference?.startsWith('SLIP-')) {
+      const preview = element('div', 'claim-slip-preview');
+      const image = element('img');
+      image.alt = `สลิปที่ ${claim.student_name} แนบสำหรับ ${claim.invoice_number || 'รายการแจ้งชำระ'}`;
+      image.hidden = true;
+      preview.append(element('p', 'muted', 'กำลังโหลดภาพสลิป…'), image);
+      const link = element('a', 'slip-download', 'เปิดไฟล์สลิป');
+      link.href = `/api/admin/payment-claims/${claimId}/slip`;
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      preview.append(link); dialog.append(preview);
+      const abort = new AbortController();
+      let blobUrl = '';
+      dialog.addEventListener('close', () => { abort.abort(); if (blobUrl) URL.revokeObjectURL(blobUrl); }, { once: true });
+      void fetch(link.href, { credentials: 'same-origin', cache: 'no-store', signal: abort.signal })
+        .then(async (response) => {
+          if (!response.ok || !['image/jpeg', 'image/png', 'image/webp'].includes(response.headers.get('content-type')?.split(';')[0])) throw new Error('ไม่สามารถแสดงภาพสลิปได้');
+          const blob = await response.blob();
+          if (!dialog.open || !blob.size) return;
+          blobUrl = URL.createObjectURL(blob);
+          image.src = blobUrl;
+          image.hidden = false;
+          preview.querySelector('p').hidden = true;
+        }).catch((error) => {
+          if (error.name !== 'AbortError' && dialog.open) preview.querySelector('p').textContent = 'ไม่สามารถแสดงภาพได้ กรุณากดเปิดไฟล์สลิป';
+        });
+    }
+    const form = element('form', 'live-form claim-review-form');
+    const verdictLabel = element('label', '', 'ผลตรวจของผู้ดูแล');
+    const verdictSelect = element('select');
+    verdictSelect.name = 'verdict'; verdictSelect.required = true;
+    option(verdictSelect, '', 'เลือกผลตรวจ');
+    const correctOption = element('option', '', 'ถูกต้อง — ตรวจยอดในบัญชีธนาคารแล้ว');
+    correctOption.value = 'correct'; correctOption.disabled = precheck.status !== 'passed';
+    verdictSelect.append(correctOption);
+    option(verdictSelect, 'incorrect', 'ไม่ถูกต้อง — ระบุเหตุผล');
+    verdictLabel.append(verdictSelect); form.append(verdictLabel);
+    const bankLabel = element('label', 'claim-bank-confirmation');
+    const bankCheckbox = element('input'); bankCheckbox.type = 'checkbox'; bankCheckbox.name = 'bank_confirmed';
+    bankLabel.append(bankCheckbox, element('span', '', 'ฉันตรวจรายการเงินเข้าบัญชีธนาคารจริงแล้ว และยอดตรงกับใบแจ้งยอด'));
+    bankLabel.hidden = true; form.append(bankLabel);
+    const reasonLabel = element('label', '', 'เหตุผลที่ไม่ถูกต้อง');
+    const reason = element('textarea'); reason.name = 'note'; reason.maxLength = 250; reason.rows = 3;
+    reason.placeholder = 'เช่น ยอดไม่ตรง / พบสลิปซ้ำ / ไม่พบรายการเงินเข้า';
+    reasonLabel.append(reason); reasonLabel.hidden = true; form.append(reasonLabel);
+    const updateFields = () => {
+      const correct = verdictSelect.value === 'correct';
+      const incorrect = verdictSelect.value === 'incorrect';
+      bankLabel.hidden = !correct; bankCheckbox.required = correct;
+      reasonLabel.hidden = !incorrect; reason.required = incorrect;
+    };
+    verdictSelect.addEventListener('change', updateFields);
+    const errorLine = element('p', 'live-modal-feedback'); errorLine.setAttribute('role', 'alert'); form.append(errorLine);
+    const actions = element('div', 'actions');
+    const cancel = element('button', '', 'ปิด'); cancel.type = 'button';
+    const save = element('button', 'primary', 'บันทึกผลตรวจ'); save.type = 'submit';
+    actions.append(cancel, save); form.append(actions); dialog.append(form);
+    return new Promise((resolve) => {
+      let savedReview = null;
+      let isSaving = false;
+      const preventCloseWhileSaving = (event) => { if (isSaving) event.preventDefault(); };
+      dialog.addEventListener('cancel', preventCloseWhileSaving);
+      cancel.onclick = () => dialog.close();
+      form.onsubmit = async (event) => {
+        event.preventDefault();
+        const verdict = verdictSelect.value;
+        const note = reason.value.trim();
+        if (!['correct', 'incorrect'].includes(verdict)) return;
+        if (verdict === 'correct' && (!bankCheckbox.checked || precheck.status !== 'passed')) {
+          errorLine.textContent = 'กรุณาตรวจยอดเงินเข้าจริงและยืนยันให้ครบก่อนบันทึกว่าถูกต้อง';
+          return;
+        }
+        if (verdict === 'incorrect' && !note) { errorLine.textContent = 'กรุณาระบุเหตุผลที่สลิปไม่ถูกต้อง'; return; }
+        isSaving = true; save.disabled = true; cancel.disabled = true; errorLine.textContent = 'กำลังบันทึกผลตรวจ…';
+        try {
+          savedReview = await api(endpoint, 'POST', { verdict, note, bank_confirmed: verdict === 'correct' && bankCheckbox.checked });
+          dialog.close();
+        } catch (error) {
+          errorLine.textContent = error.message || 'บันทึกผลตรวจไม่สำเร็จ';
+          isSaving = false;
+          save.disabled = false; cancel.disabled = false;
+        }
+      };
+      dialog.onclose = () => {
+        dialog.removeEventListener('cancel', preventCloseWhileSaving);
+        dialog.classList.remove('claim-review-dialog');
+        dialog.removeAttribute('aria-labelledby');
+        dialog.replaceChildren();
+        resolve(savedReview);
+      };
+      dialog.showModal();
+    });
+  }
+
   function renderAdmin() {
     const invoices = state.data.invoices || [];
     const unbilled = (state.data.unbilled_enrollments || []).filter((item) =>
@@ -1795,21 +1941,42 @@
       if (!invoice.individual_period && invoice.status === 'void') actions.append(actionButton('คืนสถานะใบแจ้งยอด', 'restore-invoice', invoice.id));
       invoiceBody.append(row);
     }
-    const claimBody = $('admin-claims');
-    if (!claims.length) emptyRow(claimBody, 3, 'ไม่มีรายการรอตรวจ');
+    const claimBody = $('admin-claims-rows');
+    if (!claims.length) emptyRow(claimBody, 4, 'ไม่มีรายการรอตรวจ');
     for (const claim of claims) {
       const row = element('tr');
       const person = cell(row, `${claim.student_code || '—'} · ${claim.student_name}`);
       person.append(element('div', 'muted', `${claim.invoice_number || 'ใบแจ้งยอด'} · ${claim.course_title || 'ค่าเรียน'}`));
       person.append(element('div', 'muted', claim.reference.startsWith('SLIP-') ? 'มีสลิปแนบ · กรุณาตรวจยอดจริง' : claim.reference));
-      cell(row, thaiMoney(claim.amount_satang)); const actions = cell(row, ''); actions.className = 'row-actions';
+      cell(row, thaiMoney(claim.amount_satang));
+      const reviewCell = cell(row, '', 'claim-review-cell');
+      const precheck = claim.precheck_status || 'unknown';
+      const verdict = claim.verification_status || 'needs_review';
+      const precheckText = precheck === 'passed' ? 'ข้อมูลสลิปเบื้องต้น: ผ่าน'
+        : precheck === 'failed' ? 'ข้อมูลสลิปเบื้องต้น: ไม่ผ่าน' : 'ยังไม่ทราบผลตรวจเบื้องต้น';
+      const verdictText = verdict === 'correct' ? 'ผลตรวจผู้ดูแล: ถูกต้อง'
+        : verdict === 'incorrect' ? 'ผลตรวจผู้ดูแล: ไม่ถูกต้อง' : 'รอตรวจยอดในบัญชีธนาคาร';
+      const precheckBadge = element('span', 'claim-review-badge', precheckText);
+      precheckBadge.dataset.state = precheck;
+      const verdictBadge = element('span', 'claim-review-badge', verdictText);
+      verdictBadge.dataset.state = verdict;
+      reviewCell.append(precheckBadge, verdictBadge);
+      if (precheck === 'passed' && verdict !== 'correct') reviewCell.append(element('small', 'claim-review-hint', 'ผลเบื้องต้นยังไม่ยืนยันว่ารับเงินจริง'));
+      const actions = cell(row, ''); actions.className = 'row-actions claim-row-actions';
       if (claim.reference.startsWith('SLIP-')) {
         const slip = element('a', 'slip-download', 'ดูสลิป');
         slip.href = `/api/admin/payment-claims/${validId(claim.id)}/slip`;
         slip.target = '_blank'; slip.rel = 'noopener noreferrer';
         actions.append(slip);
       }
-      actions.append(actionButton('ยืนยันรับเงิน', 'approve-claim', claim.id, 'primary'), actionButton('ปฏิเสธ', 'reject-claim', claim.id)); claimBody.append(row);
+      actions.append(actionButton('ตรวจสลิป', 'verify-claim', claim.id));
+      const approve = actionButton('ยืนยันรับเงิน', 'approve-claim', claim.id, 'primary');
+      approve.disabled = !(precheck === 'passed' && verdict === 'correct');
+      approve.title = approve.disabled ? 'ต้องตรวจสลิปและยืนยันยอดในบัญชีธนาคารก่อน' : 'ยืนยันรับเงินและออกใบสำคัญรับเงิน';
+      const reject = actionButton('ปฏิเสธ', 'reject-claim', claim.id);
+      reject.disabled = verdict !== 'incorrect';
+      reject.title = reject.disabled ? 'ต้องบันทึกผลตรวจว่าไม่ถูกต้องพร้อมเหตุผลก่อน' : 'ปฏิเสธและแจ้งนักเรียน';
+      actions.append(approve, reject); claimBody.append(row);
     }
     const invoiceSelect = $('payment-invoice'); option(invoiceSelect, '', 'เลือกใบแจ้งยอด');
     for (const invoice of invoices.filter((item) => item.status !== 'void' && item.amount_satang > item.paid_satang)) {
@@ -2332,12 +2499,32 @@
           if (!confirm('คืนสถานะใบแจ้งยอดนี้และแจ้งนักเรียนอีกครั้งหรือไม่?')) return;
           await api(`/api/admin/invoices/${id}/restore`, 'POST', {});
           message = 'คืนสถานะใบแจ้งยอดแล้ว'; break;
-        case 'approve-claim':
+        case 'verify-claim': {
+          const review = await claimVerificationDialog(id);
+          if (!review) return;
+          const claim = (state.data?.pending_payment_claims || []).find((item) => item.id === id);
+          if (claim) {
+            claim.verification_status = review.verification?.status || 'needs_review';
+            claim.precheck_status = review.precheck?.status || 'failed';
+            renderWorkspace();
+          }
+          message = review.verification?.status === 'correct'
+            ? 'บันทึกว่าตรวจสลิปและยอดในบัญชีแล้ว กรุณากดยืนยันรับเงินเพื่อออกใบสำคัญรับเงิน'
+            : 'บันทึกว่าสลิปไม่ถูกต้องแล้ว กรุณากดปฏิเสธเพื่อแจ้งนักเรียน';
+          feedback(message); return;
+        }
+        case 'approve-claim': {
+          const current = await api(`/api/admin/payment-claims/${id}/verification`);
+          if (!current.can_approve) throw new Error('ต้องตรวจสลิปเบื้องต้นและยืนยันยอดเงินเข้าบัญชีจริงก่อน');
           if (!confirm('ตรวจสลิปและยอดเงินที่เข้าบัญชีจริงครบแล้วใช่หรือไม่?')) return;
           await api(`/api/admin/payment-claims/${id}/approve`, 'POST', {}); message = 'ยืนยันรับเงินแล้ว'; break;
-        case 'reject-claim':
+        }
+        case 'reject-claim': {
+          const current = await api(`/api/admin/payment-claims/${id}/verification`);
+          if (current.verification?.status !== 'incorrect') throw new Error('ต้องบันทึกผลตรวจว่าไม่ถูกต้องพร้อมเหตุผลก่อน');
           if (!confirm('ปฏิเสธรายการแจ้งชำระนี้หรือไม่?')) return;
           await api(`/api/admin/payment-claims/${id}/reject`, 'POST', {}); message = 'ปฏิเสธรายการแจ้งชำระแล้ว'; break;
+        }
         case 'approve-time':
           await api(`/api/admin/time-entries/${id}/approve`, 'POST', {}); message = 'อนุมัติเวลาสอนและคำนวณค่าจ้างแล้ว'; break;
         case 'override-time': {

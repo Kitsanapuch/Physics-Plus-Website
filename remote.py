@@ -30,6 +30,7 @@ from backend import (
     RATE_GRID_MIGRATION,
     Response,
     SCHEMA,
+    SLIP_VERIFICATION_SCHEMA,
     SHEET_SYNC_SCHEMA,
     SHEET_DATASETS,
     fail,
@@ -290,6 +291,8 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
         self._student_code_lock = threading.Lock()
         self._payment_slips_ready = False
         self._payment_slips_lock = threading.Lock()
+        self._slip_verification_ready = False
+        self._slip_verification_lock = threading.Lock()
         self._portal_features_ready = False
         self._portal_features_lock = threading.Lock()
         self._foreign_keys_verified = False
@@ -346,12 +349,14 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             # marker. Inspect it once per warm worker instead of issuing DDL,
             # 16 seed writes and a migration transaction on every cold start.
             if (not self._sheet_schema_ready or not self._student_code_ready
-                    or not self._payment_slips_ready or not self._portal_features_ready
+                    or not self._payment_slips_ready or not self._slip_verification_ready
+                    or not self._portal_features_ready
                     or not self._session_cleanup_trigger_ready):
                 present = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type IN ('table','trigger') AND name IN "
                     "('users','sessions','sessions_cleanup_expired','app_migrations','code_counters','audit_events',"
-                    "'sheet_sync_state','payment_account','payment_slips',"
+                    "'payment_claims',"
+                    "'sheet_sync_state','payment_account','payment_slips','payment_claim_verifications',"
                     "'course_formats','course_progress_targets','teacher_availability',"
                     "'inbox_notifications','assignments','individual_monthly_invoices',"
                     "'individual_billing_lines')"
@@ -384,6 +389,12 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                                     "uploaded_at INTEGER NOT NULL,CHECK(length(content) BETWEEN 1 AND 870400))"
                                 )
                             self._payment_slips_ready = True
+                if not self._slip_verification_ready and "payment_claims" in present:
+                    with self._slip_verification_lock:
+                        if not self._slip_verification_ready:
+                            if "payment_claim_verifications" not in present:
+                                connection.executescript(SLIP_VERIFICATION_SCHEMA)
+                            self._slip_verification_ready = True
                 if not self._sheet_schema_ready:
                     with self._sheet_schema_lock:
                         if not self._sheet_schema_ready:
@@ -429,6 +440,7 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
         with self.connect() as conn:
             conn.executescript(SCHEMA + THROTTLE_SCHEMA)
             self._payment_slips_ready = True
+            self._slip_verification_ready = True
             self._portal_features_ready = True
             self._session_cleanup_trigger_ready = True
             migrate_outbox_schema(conn)
@@ -518,6 +530,9 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
             receipts_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipts'"
             ).fetchone()
+            verification_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='payment_claim_verifications'"
+            ).fetchone()
             payments_missing_receipts = conn.execute(
                 "SELECT COUNT(*) FROM payments p LEFT JOIN receipts r ON r.payment_id=p.id WHERE r.id IS NULL"
             ).fetchone()[0] if receipts_table else -1
@@ -553,7 +568,8 @@ class RemotePhysicsPlusApp(PhysicsPlusApp):
                                       {"public_code"}.issubset(user_columns) and
                                       {"course_code", "subject_code"}.issubset(course_columns) and
                                       {"room_name", "teacher_id"}.issubset(class_columns) and
-                                      teacher_nullable and bool(receipts_table) and payments_missing_receipts == 0 and
+                                      teacher_nullable and bool(receipts_table) and bool(verification_table) and
+                                      payments_missing_receipts == 0 and
                                       len(COURSE_CATALOG) == 8 and invalid_active == 0 and missing_codes == 0 and new_migrations == 3,
                 "admin_count": admin_count,
                 "active_admin_count": active_admin_count,
