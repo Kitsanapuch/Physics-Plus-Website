@@ -41,6 +41,12 @@ _CLASS_CANCELLED_MESSAGE = (
     "กรุณาเข้าสู่เว็บไซต์ Physics Plus ด้วยตนเองเพื่อตรวจสอบคาบเรียนและเหตุผล\n"
     "หากไม่ได้คาดว่าจะได้รับอีเมลนี้ โปรดละเลยข้อความนี้"
 )
+_EMAIL_TEST_SUBJECT = "Physics Plus: ทดสอบระบบแจ้งเตือนทางอีเมล"
+_EMAIL_TEST_MESSAGE = (
+    "นี่คืออีเมลทดสอบจากระบบ Physics Plus\n"
+    "ระบบส่งข้อความนี้ตามคำสั่งทดสอบของผู้ดูแล\n"
+    "หากไม่ได้สั่งทดสอบ โปรดเข้าสู่ระบบเพื่อตรวจสอบการใช้งาน"
+)
 _LOCAL_RE = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+\Z", re.ASCII)
 _DOMAIN_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z", re.ASCII)
 _API_KEY_RE = re.compile(r"re_[A-Za-z0-9_-]{8,256}\Z", re.ASCII)
@@ -170,6 +176,8 @@ def send_update_email(recipient_email: str, *, event_id: str,
         return MailResult(False, "invalid_event_id")
     if event_type == "class_cancelled":
         subject, body = _CLASS_CANCELLED_SUBJECT, _CLASS_CANCELLED_MESSAGE
+    elif event_type == "email_test":
+        subject, body = _EMAIL_TEST_SUBJECT, _EMAIL_TEST_MESSAGE
     else:
         subject, body = _SUBJECT, _MESSAGE
 
