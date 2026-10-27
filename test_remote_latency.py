@@ -344,7 +344,9 @@ class RemoteLoginLatencyTests(unittest.TestCase):
         self.assertEqual(summary.body, {
             "invoice_count": 0, "outstanding_satang": 0, "overdue_count": 0,
             "pending_claims": 0, "pending_times": 0, "unbilled_count": 0,
-            "failed_notices": 0,
+            "failed_notices": 0, "student_count": 0, "teacher_count": 3,
+            "active_course_count": 16, "active_enrollment_count": 0,
+            "upcoming_class_count": 0, "paid_this_month_satang": 0,
         })
 
     def test_admin_overview_counts_older_invoices_and_all_unbilled_courses(self) -> None:
