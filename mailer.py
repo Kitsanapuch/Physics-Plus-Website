@@ -109,9 +109,10 @@ def _smtp_refusal(status: int | None, *, auth: bool = False) -> MailResult:
 def _send_gmail_email(recipient: str, sender_value: str, app_password_value: str,
                       *, subject: str = _SUBJECT, body: str = _MESSAGE) -> MailResult:
     sender = _email_address(sender_value)
-    # Google displays app passwords in groups, so accept optional spaces but
-    # never pass other whitespace/control characters to the SMTP transport.
-    app_password = app_password_value.replace(" ", "")
+    # Google displays app passwords in groups. Copying them can also include
+    # line breaks or tabs; remove whitespace before the strict 16-character
+    # ASCII check so none of it reaches the SMTP transport.
+    app_password = re.sub(r"\s+", "", app_password_value)
     if (sender is None or sender.split("@", 1)[1] not in {"gmail.com", "googlemail.com"}
             or not re.fullmatch(r"[A-Za-z0-9]{16}", app_password, re.ASCII)):
         return MailResult(False, "invalid_configuration")

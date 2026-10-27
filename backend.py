@@ -1738,6 +1738,8 @@ class PhysicsPlusApp:
             return Response(200, self._notification_status(conn))
         if method == "POST" and path == "/api/admin/notification-test":
             return self._queue_notification_test(conn, user, data)
+        if method == "POST" and path == "/api/admin/notification-retry":
+            return self._retry_notification_delivery(conn, user, data)
         if method == "GET" and path == "/api/admin/sheet-sync/status":
             return Response(200, self._sheet_sync_status(conn))
         if method == "POST" and path == "/api/admin/sheet-sync/retry":
@@ -3112,7 +3114,12 @@ class PhysicsPlusApp:
             "FROM notification_outbox n JOIN audit_events a ON a.id=n.audit_event_id "
             "WHERE n.status='dead' ORDER BY n.created_at DESC,n.id DESC LIMIT 20"
         ).fetchall()
-        return {"counts": counts, "failed": [dict(row) for row in failed]}
+        recent = conn.execute(
+            "SELECT event_type,status,attempts,last_error_code,created_at,next_attempt_at,sent_at "
+            "FROM notification_outbox ORDER BY created_at DESC,id DESC LIMIT 10"
+        ).fetchall()
+        return {"counts": counts, "failed": [dict(row) for row in failed],
+                "recent": [dict(row) for row in recent]}
 
     def _queue_notification_test(self, conn: sqlite3.Connection, actor: sqlite3.Row,
                                  data: dict) -> Response:
@@ -3141,6 +3148,31 @@ class PhysicsPlusApp:
         event_id = self.audit(conn, actor["id"], "email_test", uid(), "request")
         self.enqueue_notice(conn, event_id, "email_test")
         return Response(202, {"queued": True})
+
+    def _retry_notification_delivery(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                                     data: dict) -> Response:
+        """Retry retained configuration failures after an admin fixes email setup."""
+        if data:
+            fail(400, "invalid_input", "This action does not accept any fields")
+        from mailer import delivery_configured
+        if not delivery_configured():
+            fail(503, "email_unconfigured", "Email delivery is not configured")
+        current = now()
+        recent = conn.execute(
+            "SELECT 1 FROM audit_events WHERE entity='email_delivery' AND action='retry' "
+            "AND created_at>? LIMIT 1", (current - 60,),
+        ).fetchone()
+        if recent:
+            fail(429, "rate_limited", "Please wait a minute before retrying email")
+        changed = conn.execute(
+            "UPDATE notification_outbox SET next_attempt_at=? WHERE status='pending' "
+            "AND last_error_code IN ('not_configured','invalid_configuration')",
+            (current,),
+        ).rowcount
+        if changed:
+            self.audit(conn, actor["id"], "email_delivery", uid(), "retry",
+                       {"queued_count": changed})
+        return Response(200, {"queued": changed})
 
     @staticmethod
     def _payment_account(conn: sqlite3.Connection) -> dict:

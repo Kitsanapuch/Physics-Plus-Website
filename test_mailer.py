@@ -173,6 +173,25 @@ class MailerTests(unittest.TestCase):
         self.assertIn("ยกคลาส", message.get_content())
         self.assertNotIn("student@gmail.com", message.get_content())
 
+    def test_gmail_app_password_accepts_copied_whitespace_only(self):
+        with patch.dict(os.environ, {
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcd efgh\nijkl\tmnop",
+        }):
+            result = send_update_email("student@gmail.com", event_id="event-whitespace")
+        self.assertTrue(result.sent)
+        self.assertEqual(_SMTP.instances[0].login_args,
+                         ("physicsplus.test@gmail.com", "abcdefghijklmnop"))
+
+        _SMTP.instances = []
+        with patch.dict(os.environ, {
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcd-efgh-ijkl-mnop",
+        }):
+            invalid = send_update_email("student@gmail.com", event_id="event-punctuation")
+        self.assertEqual(invalid.code, "invalid_configuration")
+        self.assertEqual(_SMTP.instances, [])
+
     def test_email_diagnostic_has_fixed_private_gmail_template(self):
         with patch.dict(os.environ, {
             "PH_GMAIL_USER": "physicsplus.test@gmail.com",

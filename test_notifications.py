@@ -222,7 +222,115 @@ class NotificationOutboxTests(unittest.TestCase):
         self.assertEqual(admin_view.body["failed"][0]["entity"], "user")
         self.assertEqual(admin_view.body["failed"][0]["entity_id"], student_id)
         self.assertIsNone(admin_view.body["failed"][0]["recipient_user_id"])
+        self.assertEqual(admin_view.body["recent"][0]["status"], "dead")
+        self.assertEqual(admin_view.body["recent"][0]["last_error_code"], "provider_rejected")
+        self.assertEqual(
+            set(admin_view.body["recent"][0]),
+            {"event_type", "status", "attempts", "last_error_code", "created_at",
+             "next_attempt_at", "sent_at"},
+        )
         self.assertNotIn("student@example.com", str(admin_view.body))
+
+    def test_admin_retry_reschedules_only_configuration_failures(self) -> None:
+        self.register_student()
+        self.owner.bootstrap_admin(None, "Admin", "SyntheticPassword123!", "physicsplus")
+        login = self.owner.handle(
+            "POST", "/api/auth/login",
+            {"login": "physicsplus", "password": "SyntheticPassword123!"},
+            self.origin_headers, "127.0.0.2",
+        )
+        self.assertEqual(login.status, 200, login.body)
+        admin_cookie = login.headers["Set-Cookie"].split(";", 1)[0]
+        admin_headers = {**self.origin_headers, "cookie": admin_cookie,
+                         "x-csrf-token": login.body["csrf_token"]}
+        student_me = self.owner.handle(
+            "GET", "/api/me", None,
+            {"host": "school.example", "cookie": self.student_cookie}, "127.0.0.1",
+        )
+        student_headers = {**self.origin_headers, "cookie": self.student_cookie,
+                           "x-csrf-token": student_me.body["csrf_token"]}
+
+        with self.owner.connect() as conn:
+            first = conn.execute("SELECT id FROM notification_outbox").fetchone()["id"]
+            conn.execute(
+                "UPDATE notification_outbox SET last_error_code='invalid_configuration',"
+                "next_attempt_at=? WHERE id=?", (now() + 3600, first),
+            )
+            conn.execute("BEGIN IMMEDIATE")
+            event_id = self.owner.audit(conn, None, "invoice", uid(), "create")
+            self.owner.enqueue_notice(conn, event_id, "invoice_created", None)
+            conn.commit()
+            other = conn.execute(
+                "SELECT id FROM notification_outbox WHERE audit_event_id=?", (event_id,)
+            ).fetchone()["id"]
+            conn.execute(
+                "UPDATE notification_outbox SET last_error_code='temporary_failure',"
+                "next_attempt_at=? WHERE id=?", (now() + 3600, other),
+            )
+
+        self.assertEqual(self.owner.handle(
+            "POST", "/api/admin/notification-retry", {}, student_headers, "127.0.0.1",
+        ).status, 403)
+        self.assertEqual(self.owner.handle(
+            "POST", "/api/admin/notification-retry", {},
+            {**self.origin_headers, "cookie": admin_cookie}, "127.0.0.2",
+        ).status, 403)
+        with patch.dict(os.environ, {}, clear=True):
+            missing = self.owner.handle(
+                "POST", "/api/admin/notification-retry", {}, admin_headers, "127.0.0.2",
+            )
+        self.assertEqual((missing.status, missing.body["error"]["code"]),
+                         (503, "email_unconfigured"))
+
+        config = {"PH_GMAIL_USER": "school@gmail.com",
+                  "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop"}
+        with patch.dict(os.environ, config, clear=True):
+            invalid = self.owner.handle(
+                "POST", "/api/admin/notification-retry", {"recipient": "other@example.com"},
+                admin_headers, "127.0.0.2",
+            )
+            queued = self.owner.handle(
+                "POST", "/api/admin/notification-retry", {}, admin_headers, "127.0.0.2",
+            )
+            repeated = self.owner.handle(
+                "POST", "/api/admin/notification-retry", {}, admin_headers, "127.0.0.2",
+            )
+        self.assertEqual((invalid.status, invalid.body["error"]["code"]),
+                         (400, "invalid_input"))
+        self.assertEqual((queued.status, queued.body), (200, {"queued": 1}))
+        self.assertEqual((repeated.status, repeated.body["error"]["code"]),
+                         (429, "rate_limited"))
+        with self.owner.connect() as conn:
+            first_row = conn.execute(
+                "SELECT status,next_attempt_at,last_error_code FROM notification_outbox WHERE id=?",
+                (first,),
+            ).fetchone()
+            other_row = conn.execute(
+                "SELECT next_attempt_at,last_error_code FROM notification_outbox WHERE id=?",
+                (other,),
+            ).fetchone()
+            retry_audits = conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE entity='email_delivery' AND action='retry'"
+            ).fetchone()[0]
+        self.assertEqual(first_row["status"], "pending")
+        self.assertLessEqual(first_row["next_attempt_at"], now())
+        self.assertEqual(first_row["last_error_code"], "invalid_configuration")
+        self.assertGreater(other_row["next_attempt_at"], now())
+        self.assertEqual(other_row["last_error_code"], "temporary_failure")
+        self.assertEqual(retry_audits, 1)
+        delivered: list[str] = []
+        batch = self.owner.dispatch_outbox(
+            lambda address, *, event_id, event_type=None: (
+                delivered.append(address) or MailResult(True, "accepted", provider_id="synthetic")
+            ),
+            limit=2, admin_email="admin@example.com",
+        )
+        self.assertEqual(batch["sent"], 1)
+        self.assertEqual(delivered, ["admin@example.com"])
+        with self.owner.connect() as conn:
+            self.assertEqual(conn.execute(
+                "SELECT status FROM notification_outbox WHERE id=?", (first,)
+            ).fetchone()["status"], "sent")
 
     def test_email_diagnostic_is_admin_only_private_and_rate_limited(self) -> None:
         self.register_student()
