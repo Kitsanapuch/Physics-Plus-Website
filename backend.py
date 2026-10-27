@@ -63,6 +63,11 @@ INITIAL_COURSE_CAPACITY = 13
 INDIVIDUAL_TUITION_SATANG_PER_HOUR = 30_000
 ROOM_NAMES = ("ห้องใหญ่", "ห้องเล็กด้านหน้า", "ห้องเล็กด้านหลัง", "ห้องเล็กหลังห้องใหญ่")
 DEFAULT_PAYMENT_ACCOUNT = ("ttb", "ทีเอ็มบีธนชาต", "ชดาภัษท สุดศิริ", "585-2-22394-9")
+EMAIL_CONFIG_FAILURE_CODES = (
+    "not_configured", "invalid_configuration", "invalid_gmail_sender",
+    "invalid_app_password_format", "gmail_auth_rejected", "smtp_tls_failure",
+)
+EMAIL_CONFIG_FAILURE_SQL = ",".join("?" for _ in EMAIL_CONFIG_FAILURE_CODES)
 SHEET_DATASETS = (
     "students", "teachers", "courses", "classes", "class_rosters",
     "enrollments", "invoices", "payments", "receipts", "claims",
@@ -1291,8 +1296,8 @@ class PhysicsPlusApp:
                     "lease_token=NULL,lease_until=NULL "
                     "WHERE (status='pending' OR (status='sending' AND lease_until<=?)) "
                     "AND first_attempt_at IS NOT NULL AND first_attempt_at<=? "
-                    "AND COALESCE(last_error_code,'') NOT IN ('not_configured','invalid_configuration')",
-                    (current, current - 7 * 24 * 3600),
+                    f"AND COALESCE(last_error_code,'') NOT IN ({EMAIL_CONFIG_FAILURE_SQL})",
+                    (current, current - 7 * 24 * 3600, *EMAIL_CONFIG_FAILURE_CODES),
                 ).rowcount
                 outcome["dead"] += max(0, expired)
                 row = conn.execute(
@@ -1350,7 +1355,7 @@ class PhysicsPlusApp:
             if sent:
                 status, next_attempt = "sent", current
                 outcome["sent"] += 1
-            elif code in {"not_configured", "invalid_configuration"}:
+            elif code in EMAIL_CONFIG_FAILURE_CODES:
                 # Configuration can be fixed after deployment; keep the notice.
                 status, next_attempt = "pending", current + 3600
                 outcome["retrying"] += 1
@@ -1371,8 +1376,8 @@ class PhysicsPlusApp:
                     "WHERE id=? AND status='sending' AND lease_token=?",
                     (status, next_attempt, provider_id,
                      None if sent else code, current if sent else None,
-                     int(code in {"not_configured", "invalid_configuration"}),
-                     int(code in {"not_configured", "invalid_configuration"}),
+                     int(code in EMAIL_CONFIG_FAILURE_CODES),
+                     int(code in EMAIL_CONFIG_FAILURE_CODES),
                      row["id"], lease_token),
                 )
                 conn.commit()
@@ -3166,8 +3171,8 @@ class PhysicsPlusApp:
             fail(429, "rate_limited", "Please wait a minute before retrying email")
         changed = conn.execute(
             "UPDATE notification_outbox SET next_attempt_at=? WHERE status='pending' "
-            "AND last_error_code IN ('not_configured','invalid_configuration')",
-            (current,),
+            f"AND last_error_code IN ({EMAIL_CONFIG_FAILURE_SQL})",
+            (current, *EMAIL_CONFIG_FAILURE_CODES),
         ).rowcount
         if changed:
             self.audit(conn, actor["id"], "email_delivery", uid(), "retry",
