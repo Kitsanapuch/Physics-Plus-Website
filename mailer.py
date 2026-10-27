@@ -103,7 +103,7 @@ def delivery_configured() -> bool:
 def _smtp_refusal(status: int | None, *, auth: bool = False) -> MailResult:
     if status is not None and 400 <= status < 500:
         return MailResult(False, "temporary_failure", retryable=True, status=status)
-    return MailResult(False, "invalid_configuration" if auth else "provider_rejected", status=status)
+    return MailResult(False, "gmail_auth_rejected" if auth else "provider_rejected", status=status)
 
 
 def _send_gmail_email(recipient: str, sender_value: str, app_password_value: str,
@@ -113,9 +113,10 @@ def _send_gmail_email(recipient: str, sender_value: str, app_password_value: str
     # line breaks or tabs; remove whitespace before the strict 16-character
     # ASCII check so none of it reaches the SMTP transport.
     app_password = re.sub(r"\s+", "", app_password_value)
-    if (sender is None or sender.split("@", 1)[1] not in {"gmail.com", "googlemail.com"}
-            or not re.fullmatch(r"[A-Za-z0-9]{16}", app_password, re.ASCII)):
-        return MailResult(False, "invalid_configuration")
+    if sender is None or sender.split("@", 1)[1] not in {"gmail.com", "googlemail.com"}:
+        return MailResult(False, "invalid_gmail_sender")
+    if not re.fullmatch(r"[A-Za-z0-9]{16}", app_password, re.ASCII):
+        return MailResult(False, "invalid_app_password_format")
 
     message = EmailMessage()
     message["From"] = sender
@@ -145,7 +146,7 @@ def _send_gmail_email(recipient: str, sender_value: str, app_password_value: str
         code = first[0] if isinstance(first, tuple) and first else None
         return _smtp_refusal(code if isinstance(code, int) else None)
     except ssl.SSLCertVerificationError:
-        return MailResult(False, "invalid_configuration")
+        return MailResult(False, "smtp_tls_failure")
     except (smtplib.SMTPException, OSError, TimeoutError):
         # Failure after DATA may be ambiguous: the outbox may retry this
         # generic notice, but no student or payment details are in the body.

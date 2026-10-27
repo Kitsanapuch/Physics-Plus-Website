@@ -189,7 +189,7 @@ class MailerTests(unittest.TestCase):
             "PH_GMAIL_APP_PASSWORD": "abcd-efgh-ijkl-mnop",
         }):
             invalid = send_update_email("student@gmail.com", event_id="event-punctuation")
-        self.assertEqual(invalid.code, "invalid_configuration")
+        self.assertEqual(invalid.code, "invalid_app_password_format")
         self.assertEqual(_SMTP.instances, [])
 
     def test_email_diagnostic_has_fixed_private_gmail_template(self):
@@ -213,7 +213,7 @@ class MailerTests(unittest.TestCase):
         }):
             _SMTP.error_on_login = smtplib.SMTPAuthenticationError(535, b"private auth detail")
             invalid = send_update_email("student@gmail.com", event_id="event-1")
-            self.assertEqual(invalid.code, "invalid_configuration")
+            self.assertEqual(invalid.code, "gmail_auth_rejected")
             self.assertFalse(invalid.retryable)
             self.assertNotIn("private", str(invalid))
             self.assertTrue(_SMTP.instances[-1].closed)
@@ -245,9 +245,19 @@ class MailerTests(unittest.TestCase):
     def test_invalid_gmail_configuration_does_not_connect_or_downgrade_to_resend(self):
         with patch.dict(os.environ, {"PH_GMAIL_USER": "bad\n@gmail.com", "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop"}):
             self.assertEqual(send_update_email("student@gmail.com", event_id="x").code,
-                             "invalid_configuration")
+                             "invalid_gmail_sender")
         self.assertEqual(_SMTP.instances, [])
         self.assertEqual(_Connection.requests, [])
+
+    def test_gmail_certificate_error_reports_only_sanitized_cause(self):
+        with patch.dict(os.environ, {
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+        }), patch("mailer.smtplib.SMTP_SSL", side_effect=ssl.SSLCertVerificationError("private detail")):
+            result = send_update_email("student@gmail.com", event_id="tls-error")
+        self.assertEqual(result.code, "smtp_tls_failure")
+        self.assertFalse(result.retryable)
+        self.assertNotIn("private", str(result))
 
     def test_partial_gmail_configuration_uses_resend_when_available(self):
         _Connection.responses = [_Response(200, b'{"id":"email_2"}')]
