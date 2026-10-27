@@ -327,7 +327,7 @@
       if (response.status === 401 && path !== '/api/me') location.replace('index.html');
       throw error;
     }
-    if (method !== 'GET' && state.me?.role === 'admin' && !['/api/admin/sheet-sync/retry', '/api/admin/notification-test'].includes(path)) {
+    if (method !== 'GET' && state.me?.role === 'admin' && !['/api/admin/sheet-sync/retry', '/api/admin/notification-test', '/api/admin/notification-retry'].includes(path)) {
       window.clearTimeout(sheetStatusRefreshTimer);
       sheetStatusRefreshTimer = window.setTimeout(fetchSheetSyncStatus, 400);
     }
@@ -2072,6 +2072,99 @@
     }
   }
 
+  function setAdminEmailFeedback(message, failed = false) {
+    state.emailTestStatus = message;
+    state.emailTestFailed = failed;
+    const status = $('email-test-status');
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = !message;
+    status.classList.toggle('is-error', failed);
+  }
+
+  function renderAdminEmailStatus(notifications = {}) {
+    const counts = notifications.counts || {};
+    const countLine = $('admin-email-counts');
+    if (countLine) countLine.textContent = `รอส่ง ${Number(counts.pending || 0) + Number(counts.sending || 0)} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
+    const recent = Array.isArray(notifications.recent) ? notifications.recent : [];
+    const configIssue = recent.some((item) => item.status === 'pending' &&
+      ['not_configured', 'invalid_configuration'].includes(item.last_error_code));
+    const warning = $('admin-email-warning');
+    if (warning) warning.hidden = !configIssue;
+    const recentHost = $('admin-email-recent');
+    if (recentHost) {
+      recentHost.replaceChildren();
+      recentHost.append(element('h3', '', 'รายการส่งล่าสุด'));
+      if (!recent.length) recentHost.append(element('p', 'muted', 'ยังไม่มีรายการอีเมลแจ้งเตือน'));
+      else {
+        const statusLabels = { pending: 'รอส่ง', sending: 'กำลังส่ง', sent: 'ส่งแล้ว', dead: 'ส่งไม่สำเร็จ' };
+        const errorLabels = {
+          not_configured: 'ยังไม่ได้ตั้งค่าการส่งอีเมล',
+          invalid_configuration: 'การตั้งค่า Gmail หรือการยืนยันตัวตนไม่สำเร็จ',
+          provider_rejected: 'ผู้ให้บริการปฏิเสธการส่ง',
+          temporary_failure: 'บริการอีเมลขัดข้องชั่วคราว',
+          retry_expired: 'ส่งซ้ำเกินเวลาที่กำหนด'
+        };
+        const wrap = element('div', 'tablewrap');
+        const table = element('table', 'email-delivery-table');
+        const head = element('thead');
+        const headRow = element('tr');
+        for (const label of ['เวลา', 'เหตุการณ์', 'สถานะ', 'จำนวนครั้ง', 'รายละเอียด']) headRow.append(element('th', '', label));
+        head.append(headRow);
+        const body = element('tbody');
+        for (const notice of recent) {
+          const row = element('tr');
+          cell(row, thaiDateTime(notice.created_at));
+          cell(row, notice.event_type === 'email_test' ? 'อีเมลทดสอบ' : noticeLabels[notice.event_type] || notice.event_type || 'ข้อมูลอัปเดต');
+          cell(row, statusLabels[notice.status] || 'ไม่ทราบสถานะ');
+          cell(row, String(notice.attempts ?? 0));
+          const detail = notice.last_error_code
+            ? errorLabels[notice.last_error_code] || notice.last_error_code
+            : notice.status === 'pending' && notice.next_attempt_at
+              ? `กำหนดส่ง ${thaiDateTime(notice.next_attempt_at)}` : '—';
+          cell(row, detail);
+          body.append(row);
+        }
+        table.append(head, body); wrap.append(table); recentHost.append(wrap);
+      }
+    }
+    const failedHost = $('admin-email-failed');
+    if (failedHost) {
+      failedHost.replaceChildren();
+      const failed = Array.isArray(notifications.failed) ? notifications.failed : [];
+      if (!failed.length) failedHost.append(element('p', 'muted', 'ยังไม่มีอีเมลส่งไม่สำเร็จ'));
+      else {
+        failedHost.append(element('h3', '', 'รายการส่งไม่สำเร็จ'));
+        const wrap = element('div', 'tablewrap');
+        const table = element('table');
+        const head = element('thead');
+        const headRow = element('tr');
+        for (const label of ['เวลาที่เกิด', 'เหตุการณ์', 'จำนวนครั้ง', 'สาเหตุ']) headRow.append(element('th', '', label));
+        head.append(headRow);
+        const body = element('tbody');
+        for (const notice of failed) {
+          const row = element('tr');
+          cell(row, thaiDateTime(notice.created_at));
+          cell(row, notice.event_type || 'ข้อมูลอัปเดต');
+          cell(row, String(notice.attempts ?? '—'));
+          cell(row, notice.last_error_code || 'ไม่ทราบสาเหตุ');
+          body.append(row);
+        }
+        table.append(head, body); wrap.append(table); failedHost.append(wrap);
+      }
+    }
+  }
+
+  function scheduleAdminEmailRefresh() {
+    for (const wait of [2000, 7000]) window.setTimeout(() => {
+      if (state.me?.role !== 'admin') return;
+      void api('/api/admin/notification-status').then((result) => {
+        if (state.data) state.data.notifications = result;
+        renderAdminEmailStatus(result);
+      }).catch(() => {});
+    }, wait);
+  }
+
   function renderAdmin() {
     const invoices = state.data.invoices || [];
     const unbilled = (state.data.unbilled_enrollments || []).filter((item) =>
@@ -2084,7 +2177,6 @@
     const users = state.data.users || [];
     const notifications = state.data.notifications || {};
     const notificationCounts = notifications.counts || {};
-    const failedNotices = notifications.failed || [];
     const teachers = users.filter((person) => person.role === 'teacher');
     const staffBody = $('admin-staff-rows');
     $('staff-total').textContent = `ครูทั้งหมด ${teachers.length} คน`;
@@ -2174,13 +2266,18 @@
     const notificationPanel = element('section', 'panel');
     notificationPanel.id = 'admin-notifications';
     notificationPanel.append(element('h2', '', 'สถานะอีเมลแจ้งเตือน'));
-    const deliveryCounts = element('p', 'muted', `รอส่ง ${Number(notificationCounts.pending || 0) + Number(notificationCounts.sending || 0)} · ส่งแล้ว ${Number(notificationCounts.sent) || 0} · ส่งไม่สำเร็จ ${Number(notificationCounts.dead) || 0}`);
+    const deliveryCounts = element('p', 'muted');
     deliveryCounts.id = 'admin-email-counts';
     notificationPanel.append(deliveryCounts);
     const testActions = element('div', 'email-test-actions');
     testActions.append(actionButton('ส่งอีเมลทดสอบ', 'send-test-email'));
+    testActions.append(actionButton('ส่งคิวที่ค้างอีกครั้ง', 'retry-email-delivery'));
     testActions.append(element('span', 'muted', 'ส่งไปยังอีเมลผู้ดูแลที่ตั้งค่าไว้ เพื่อทดสอบการส่งจริง'));
     notificationPanel.append(testActions);
+    const warning = element('p', 'email-delivery-warning', 'มีอีเมลรอส่งเพราะการตั้งค่า Gmail หรือการยืนยันตัวตนยังไม่สำเร็จ ตรวจ PH_GMAIL_APP_PASSWORD ใน Vercel Production แล้วกด “ส่งคิวที่ค้างอีกครั้ง”');
+    warning.id = 'admin-email-warning';
+    warning.hidden = true;
+    notificationPanel.append(warning);
     const testStatus = element('p', 'email-test-status', state.emailTestStatus);
     testStatus.id = 'email-test-status';
     testStatus.setAttribute('role', 'status');
@@ -2188,25 +2285,14 @@
     testStatus.hidden = !state.emailTestStatus;
     testStatus.classList.toggle('is-error', state.emailTestFailed);
     notificationPanel.append(testStatus);
-    if (failedNotices.length) {
-      const wrap = element('div', 'tablewrap');
-      const table = element('table');
-      const head = element('thead');
-      const headRow = element('tr');
-      for (const label of ['เวลาที่เกิด', 'เหตุการณ์', 'จำนวนครั้ง', 'สาเหตุ']) headRow.append(element('th', '', label));
-      head.append(headRow);
-      const body = element('tbody');
-      for (const notice of failedNotices) {
-        const row = element('tr');
-        cell(row, thaiDateTime(notice.created_at));
-        cell(row, notice.event_type || 'ข้อมูลอัปเดต');
-        cell(row, String(notice.attempts ?? '—'));
-        cell(row, notice.last_error_code || 'ไม่ทราบสาเหตุ');
-        body.append(row);
-      }
-      table.append(head, body); wrap.append(table); notificationPanel.append(wrap);
-    } else notificationPanel.append(element('p', 'muted', 'ยังไม่มีอีเมลส่งไม่สำเร็จ'));
+    const recentHost = element('div', 'email-delivery-recent');
+    recentHost.id = 'admin-email-recent';
+    notificationPanel.append(recentHost);
+    const failedHost = element('div', 'email-delivery-failed');
+    failedHost.id = 'admin-email-failed';
+    notificationPanel.append(failedHost);
     $('admin-overview-mail').append(notificationPanel);
+    renderAdminEmailStatus(notifications);
     notificationPanel.hidden = state.loadingDetails;
     installAdminPeopleSearch();
     const enrollmentSelect = $('invoice-enrollment'); option(enrollmentSelect, '', 'เลือกนักเรียนและคอร์ส');
@@ -2587,34 +2673,42 @@
     if (action === 'send-test-email') {
       if (state.me?.role !== 'admin') return;
       await task(button, async () => {
-        const status = $('email-test-status');
-        const update = (message, failed = false) => {
-          state.emailTestStatus = message;
-          state.emailTestFailed = failed;
-          if (status) {
-            status.textContent = message;
-            status.hidden = false;
-            status.classList.toggle('is-error', failed);
-          }
-          feedback('');
-        };
-        update('กำลังส่งคำขอทดสอบ…');
+        setAdminEmailFeedback('กำลังส่งคำขอทดสอบ…');
         try {
           await api('/api/admin/notification-test', 'POST', {});
-          update('เพิ่มอีเมลทดสอบเข้าคิวแล้ว กรุณาตรวจสถานะส่งจริงในรายการอีเมลแจ้งเตือน');
-          for (const wait of [2000, 7000]) window.setTimeout(() => {
-            void api('/api/admin/notification-status').then((result) => {
-              if (state.data) state.data.notifications = result;
-              const line = $('admin-email-counts');
-              const counts = result.counts || {};
-              if (line) line.textContent = `รอส่ง ${Number(counts.pending || 0) + Number(counts.sending || 0)} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
-            }).catch(() => {});
-          }, wait);
+          setAdminEmailFeedback('เพิ่มอีเมลทดสอบเข้าคิวแล้ว กรุณาตรวจสถานะส่งจริงในรายการอีเมลแจ้งเตือน');
+          scheduleAdminEmailRefresh();
         } catch (error) {
-          update(error.code === 'email_unconfigured'
+          setAdminEmailFeedback(error.code === 'email_unconfigured'
             ? 'ยังไม่ได้ตั้งค่าการส่งอีเมล กรุณาตรวจการตั้งค่าในระบบ'
             : 'ส่งคำขอทดสอบไม่สำเร็จ กรุณาลองใหม่หรือตรวจการตั้งค่าอีเมล', true);
         }
+        feedback('');
+      });
+      return;
+    }
+    if (action === 'retry-email-delivery') {
+      if (state.me?.role !== 'admin') return;
+      await task(button, async () => {
+        setAdminEmailFeedback('กำลังส่งคิวอีเมลที่ค้างอีกครั้ง…');
+        try {
+          const result = await api('/api/admin/notification-retry', 'POST', {});
+          const queued = Number(result.queued) || 0;
+          setAdminEmailFeedback(queued
+            ? `ส่งคิวที่ค้าง ${queued.toLocaleString('th-TH')} รายการอีกครั้งแล้ว กรุณาตรวจสถานะล่าสุดด้านล่าง`
+            : 'ไม่มีอีเมลที่รอส่งเพราะการตั้งค่า Gmail');
+          const updated = await api('/api/admin/notification-status');
+          if (state.data) state.data.notifications = updated;
+          renderAdminEmailStatus(updated);
+          if (queued) scheduleAdminEmailRefresh();
+        } catch (error) {
+          setAdminEmailFeedback(error.code === 'email_unconfigured'
+            ? 'ยังไม่ได้ตั้งค่าการส่งอีเมล กรุณาตรวจการตั้งค่าในระบบ'
+            : error.code === 'rate_limited'
+              ? 'กรุณารออย่างน้อยหนึ่งนาทีก่อนสั่งส่งคิวอีกครั้ง'
+              : 'ส่งคิวอีเมลอีกครั้งไม่สำเร็จ กรุณาลองใหม่', true);
+        }
+        feedback('');
       });
       return;
     }
