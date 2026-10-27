@@ -173,6 +173,20 @@ class MailerTests(unittest.TestCase):
         self.assertIn("ยกคลาส", message.get_content())
         self.assertNotIn("student@gmail.com", message.get_content())
 
+    def test_email_diagnostic_has_fixed_private_gmail_template(self):
+        with patch.dict(os.environ, {
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+        }):
+            result = send_update_email("admin@gmail.com", event_id="test-event-1",
+                                       event_type="email_test")
+        self.assertTrue(result.sent)
+        message = _SMTP.instances[0].message
+        self.assertIn("ทดสอบระบบแจ้งเตือน", str(message["Subject"]))
+        self.assertIn("อีเมลทดสอบ", message.get_content())
+        self.assertNotIn("admin@gmail.com", message.get_content())
+        self.assertNotIn("test-event-1", message.get_content())
+
     def test_gmail_auth_and_provider_errors_are_private_and_classified(self):
         with patch.dict(os.environ, {
             "PH_GMAIL_USER": "physicsplus.test@gmail.com",

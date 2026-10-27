@@ -224,6 +224,83 @@ class NotificationOutboxTests(unittest.TestCase):
         self.assertIsNone(admin_view.body["failed"][0]["recipient_user_id"])
         self.assertNotIn("student@example.com", str(admin_view.body))
 
+    def test_email_diagnostic_is_admin_only_private_and_rate_limited(self) -> None:
+        self.register_student()
+        self.owner.bootstrap_admin(None, "Admin", "SyntheticPassword123!", "physicsplus")
+        login = self.owner.handle(
+            "POST", "/api/auth/login", {"login": "physicsplus", "password": "SyntheticPassword123!"},
+            self.origin_headers, "127.0.0.2",
+        )
+        self.assertEqual(login.status, 200)
+        cookie = login.headers["Set-Cookie"].split(";", 1)[0]
+        csrf = login.body["csrf_token"]
+        admin_headers = {**self.origin_headers, "cookie": cookie, "x-csrf-token": csrf}
+        student = self.owner.handle(
+            "POST", "/api/admin/notification-test", {},
+            {**self.origin_headers, "cookie": self.student_cookie,
+             "x-csrf-token": self.owner.handle("GET", "/api/me", None,
+                                              {"host": "school.example", "cookie": self.student_cookie},
+                                              "127.0.0.1").body["csrf_token"]},
+            "127.0.0.1",
+        )
+        self.assertEqual(student.status, 403)
+        self.assertEqual(self.owner.handle(
+            "POST", "/api/admin/notification-test", {},
+            {**self.origin_headers, "cookie": cookie}, "127.0.0.2",
+        ).status, 403)
+        with self.owner.connect() as conn:
+            conn.execute("DELETE FROM notification_outbox")
+            conn.execute("DELETE FROM inbox_notifications")
+            before_sheet = [tuple(row) for row in conn.execute(
+                "SELECT dataset,revision FROM sheet_sync_state ORDER BY dataset"
+            )]
+            before_students = conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0]
+
+        with patch.dict(os.environ, {}, clear=True):
+            unconfigured = self.owner.handle("POST", "/api/admin/notification-test", {}, admin_headers, "127.0.0.2")
+        self.assertEqual((unconfigured.status, unconfigured.body["error"]["code"]),
+                         (503, "email_unconfigured"))
+
+        configuration = {
+            "PH_GMAIL_USER": "school@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+            "PH_ADMIN_NOTIFICATION_EMAIL": "admin@example.com",
+        }
+        with patch.dict(os.environ, configuration, clear=True):
+            invalid_body = self.owner.handle(
+                "POST", "/api/admin/notification-test", {"recipient": "other@example.com"},
+                admin_headers, "127.0.0.2",
+            )
+            self.assertEqual(invalid_body.status, 400)
+            queued = self.owner.handle("POST", "/api/admin/notification-test", {}, admin_headers, "127.0.0.2")
+            repeat = self.owner.handle("POST", "/api/admin/notification-test", {}, admin_headers, "127.0.0.2")
+        self.assertEqual((queued.status, queued.body), (202, {"queued": True}))
+        self.assertEqual((repeat.status, repeat.body["error"]["code"]), (429, "rate_limited"))
+        self.assertNotIn("admin@example.com", str(queued.body))
+        with self.owner.connect() as conn:
+            row = conn.execute(
+                "SELECT n.event_type,n.recipient_kind,n.recipient_user_id,a.entity,a.action "
+                "FROM notification_outbox n JOIN audit_events a ON a.id=n.audit_event_id"
+            ).fetchone()
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM notification_outbox").fetchone()[0], 1)
+            self.assertEqual([tuple(item) for item in conn.execute(
+                "SELECT dataset,revision FROM sheet_sync_state ORDER BY dataset"
+            )], before_sheet)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM users WHERE role='student'").fetchone()[0],
+                             before_students)
+        self.assertEqual(tuple(row), ("email_test", "admin", None, "email_test", "request"))
+
+        received = []
+        def fake_send(address: str, *, event_id: str, event_type: str) -> MailResult:
+            received.append((address, event_id, event_type))
+            return MailResult(True, "accepted", provider_id="synthetic")
+        self.assertEqual(self.owner.dispatch_outbox(fake_send, limit=2,
+                                                    admin_email="admin@example.com")["sent"], 1)
+        self.assertEqual(len(received), 1)
+        self.assertEqual((received[0][0], received[0][2]), ("admin@example.com", "email_test"))
+        self.assertEqual(self.owner.dispatch_outbox(fake_send, limit=2,
+                                                    admin_email="admin@example.com")["sent"], 0)
+
     def test_old_outbox_schema_gets_first_attempt_column(self) -> None:
         with self.owner.connect() as conn:
             conn.execute("DROP TABLE notification_outbox")

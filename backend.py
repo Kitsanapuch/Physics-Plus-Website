@@ -1329,8 +1329,8 @@ class PhysicsPlusApp:
                     active = False
             if recipient and active:
                 try:
-                    if row["event_type"] == "class_cancelled":
-                        result = send_email(recipient, event_id=row["id"], event_type="class_cancelled")
+                    if row["event_type"] in {"class_cancelled", "email_test"}:
+                        result = send_email(recipient, event_id=row["id"], event_type=row["event_type"])
                     else:
                         result = send_email(recipient, event_id=row["id"])
                     sent = result.sent is True
@@ -1736,6 +1736,8 @@ class PhysicsPlusApp:
             return self._admin_payment_alerts(conn)
         if method == "GET" and path == "/api/admin/notification-status":
             return Response(200, self._notification_status(conn))
+        if method == "POST" and path == "/api/admin/notification-test":
+            return self._queue_notification_test(conn, user, data)
         if method == "GET" and path == "/api/admin/sheet-sync/status":
             return Response(200, self._sheet_sync_status(conn))
         if method == "POST" and path == "/api/admin/sheet-sync/retry":
@@ -1745,6 +1747,11 @@ class PhysicsPlusApp:
             return self._update_payment_account(conn, user, data)
         if method == "GET" and path == "/api/admin/users":
             return Response(200, {"users": self._admin_users(conn)})
+        if method == "GET" and path == "/api/admin/people/search":
+            return self._admin_people_search(conn, query)
+        person_history_match = re.fullmatch(r"/api/admin/people/([0-9a-f]{32})/history", path)
+        if method == "GET" and person_history_match:
+            return self._admin_person_history(conn, person_history_match.group(1), query)
         if method == "GET" and path == "/api/admin/academic":
             return self._admin_academic(conn)
         if method == "GET" and path == "/api/admin/tasks":
@@ -2623,6 +2630,274 @@ class PhysicsPlusApp:
             result.append(item)
         return result
 
+    @staticmethod
+    def _admin_people_search(conn: sqlite3.Connection, query: dict) -> Response:
+        """Search the directory on demand without loading every account."""
+        role = (query.get("role") or ["all"])[0]
+        if role not in {"all", "student", "teacher"}:
+            fail(400, "invalid_role", "Choose all, student, or teacher")
+        term = (query.get("q") or [""])[0]
+        if not isinstance(term, str) or len(term) > 80 or any(ord(char) < 32 for char in term):
+            fail(400, "invalid_search", "Search text is too long or invalid")
+        term = " ".join(term.split()).casefold()
+        conditions = ["u.role IN ('student','teacher')"]
+        params: list[str | int] = []
+        if role != "all":
+            conditions.append("u.role=?")
+            params.append(role)
+        if term:
+            # INSTR treats '%' and '_' literally, unlike LIKE wildcard input.
+            conditions.append("(instr(lower(u.name),?)>0 OR instr(lower(COALESCE(u.public_code,'')),?)>0 "
+                              "OR instr(lower(COALESCE(u.email,'')),?)>0)")
+            params.extend([term] * 3)
+        rows = conn.execute(
+            "SELECT u.id,u.public_code,u.name,u.email,u.role,u.status,u.created_at,"
+            "p.grade,p.school FROM users u LEFT JOIN student_profiles p ON p.user_id=u.id "
+            "WHERE " + " AND ".join(conditions) + " ORDER BY u.created_at DESC,u.id DESC LIMIT 51",
+            params,
+        ).fetchall()
+        people = []
+        for row in rows[:50]:
+            person = dict(row)
+            person["roster_pending"] = is_pending_teacher(person)
+            person["email"] = public_email(person)
+            people.append(person)
+        return Response(200, {"people": people, "has_more": len(rows) > 50})
+
+    @staticmethod
+    def _person_timeline(conn: sqlite3.Connection, person_id: str, role: str,
+                         cursor: str) -> tuple[list[dict], str | None]:
+        """Page through linked audit events without exposing raw detail JSON."""
+        related = [
+            "(a.entity IN ('user','student_profile') AND a.entity_id=?)",
+            "(a.entity='assignment' AND ("
+            "EXISTS(SELECT 1 FROM assignments x WHERE x.id=a.entity_id AND x.assignee_id=?) "
+            "OR json_extract(a.details,'$.assignee_id')=?))",
+        ]
+        params: list[str | int] = [person_id, person_id, person_id]
+        if role == "student":
+            related.extend([
+                "(a.entity='enrollment' AND EXISTS(SELECT 1 FROM enrollments x WHERE x.id=a.entity_id AND x.student_id=?))",
+                "(a.entity='invoice' AND EXISTS(SELECT 1 FROM invoices x WHERE x.id=a.entity_id AND x.student_id=?))",
+                "(a.entity='payment_claim' AND EXISTS(SELECT 1 FROM payment_claims x WHERE x.id=a.entity_id AND x.student_id=?))",
+                "(a.entity='payment' AND EXISTS(SELECT 1 FROM payments x JOIN invoices i ON i.id=x.invoice_id WHERE x.id=a.entity_id AND i.student_id=?))",
+                "(a.entity IN ('class_session','attendance') AND EXISTS(SELECT 1 FROM session_students x WHERE x.session_id=a.entity_id AND x.student_id=?))",
+                "(a.entity='class_session' AND json_extract(a.details,'$.recipient_user_id')=?)",
+            ])
+            params.extend([person_id] * 6)
+        else:
+            related.extend([
+                "(a.entity IN ('class_session','attendance') AND EXISTS(SELECT 1 FROM class_sessions x WHERE x.id=a.entity_id AND x.teacher_id=?))",
+                "(a.entity='time_entry' AND EXISTS(SELECT 1 FROM time_entries x WHERE x.id=a.entity_id AND x.teacher_id=?))",
+                "(a.entity='payroll_run' AND EXISTS(SELECT 1 FROM payroll_runs x WHERE x.id=a.entity_id AND x.teacher_id=?))",
+                "(a.entity='payroll_adjustment' AND EXISTS(SELECT 1 FROM payroll_adjustments x JOIN payroll_runs p ON p.id=x.run_id WHERE x.id=a.entity_id AND p.teacher_id=?))",
+                "(a.entity='teacher_availability' AND EXISTS(SELECT 1 FROM teacher_availability x WHERE x.id=a.entity_id AND x.teacher_id=?))",
+                "(a.entity='course' AND EXISTS(SELECT 1 FROM courses x WHERE x.id=a.entity_id AND x.teacher_id=?))",
+                "(a.entity='class_session' AND json_extract(a.details,'$.recipient_user_id')=?)",
+            ])
+            params.extend([person_id] * 7)
+        where = "(" + " OR ".join(related) + ")"
+        if cursor:
+            match = re.fullmatch(r"([0-9]{1,12}):([0-9a-f]{32})", cursor)
+            if not match:
+                fail(400, "invalid_cursor", "History cursor is invalid")
+            epoch = int(match.group(1))
+            where += " AND (a.created_at<? OR (a.created_at=? AND a.id<?))"
+            params.extend([epoch, epoch, match.group(2)])
+        rows = conn.execute(
+            "SELECT a.id,a.entity,a.entity_id,a.action,a.created_at,COALESCE(actor.name,'ระบบ') actor_name "
+            "FROM audit_events a LEFT JOIN users actor ON actor.id=a.actor_id "
+            "WHERE " + where + " ORDER BY a.created_at DESC,a.id DESC LIMIT 41",
+            params,
+        ).fetchall()
+        timeline = [dict(row) for row in rows[:40]]
+        next_cursor = (f"{timeline[-1]['created_at']}:{timeline[-1]['id']}"
+                       if len(rows) > 40 and timeline else None)
+        return timeline, next_cursor
+
+    def _admin_person_history(self, conn: sqlite3.Connection, person_id: str,
+                              query: dict) -> Response:
+        """A private, bounded dossier; the audit timeline can be paged in full."""
+        row = conn.execute(
+            "SELECT u.id,u.public_code,u.name,u.email,u.role,u.status,u.created_at,"
+            "p.grade,p.school,p.guardian_name,p.guardian_phone,p.guardian_relationship "
+            "FROM users u LEFT JOIN student_profiles p ON p.user_id=u.id "
+            "WHERE u.id=? AND u.role IN ('student','teacher')", (person_id,),
+        ).fetchone()
+        if row is None:
+            fail(404, "person_not_found", "Student or teacher not found")
+        person = dict(row)
+        person["roster_pending"] = is_pending_teacher(person)
+        person["email"] = public_email(person)
+        cursor = (query.get("cursor") or [""])[0]
+        if not isinstance(cursor, str) or len(cursor) > 50:
+            fail(400, "invalid_cursor", "History cursor is invalid")
+        timeline, next_cursor = self._person_timeline(conn, person_id, person["role"], cursor)
+
+        # All sections expose only explicitly chosen columns. Password hashes,
+        # authentication tokens, slip bytes and raw audit detail JSON are never
+        # returned by this endpoint. The long-term record remains in Turso;
+        # these lists show the newest 50 items, and the timeline pages older
+        # changes without an unbounded response.
+        sections: dict[str, list[dict]] = {name: [] for name in (
+            "enrollments", "invoices", "payments", "payment_claims", "receipts",
+            "classes", "teaching", "payroll", "availability", "courses", "assignments",
+        )}
+        section_fields: dict[str, tuple[str, ...]] = {
+            "enrollments": ("id", "status", "created_at", "course_id", "course_code",
+                            "course_title", "subject", "level", "course_format"),
+            "invoices": ("id", "invoice_number", "enrollment_id", "description", "amount_satang",
+                         "status", "due_date", "created_at", "paid_satang"),
+            "payments": ("id", "invoice_id", "invoice_number", "amount_satang", "method",
+                         "reference", "recorded_at", "receipt_id", "receipt_number"),
+            "payment_claims": ("id", "invoice_id", "invoice_number", "amount_satang",
+                               "reference", "status", "created_at", "reviewed_at", "verification_status"),
+            "receipts": ("id", "receipt_number", "invoice_number", "description", "course_code",
+                         "course_title", "amount_satang", "method", "reference", "paid_at", "issued_at"),
+            "teaching": ("id", "session_id", "actual_start", "actual_end", "break_minutes",
+                         "status", "payable_minutes", "student_count", "rate_satang_per_hour",
+                         "amount_satang", "submitted_at", "reviewed_at", "rejection_reason",
+                         "room_name", "course_title"),
+            "payroll": ("id", "period", "status", "total_satang", "created_at", "finalized_at",
+                        "paid_at", "payment_reference"),
+            "availability": ("id", "starts_at", "ends_at", "active", "created_at"),
+            "courses": ("id", "course_code", "title", "subject", "level", "active",
+                        "created_at", "course_format"),
+            "classes": (("id", "room_name", "starts_at", "ends_at", "status", "course_title",
+                         "course_code", "teacher_name", "attendance_status", "recorded_at")
+                        if person["role"] == "student" else
+                        ("id", "room_name", "starts_at", "ends_at", "status", "course_title",
+                         "course_code", "roster_count")),
+        }
+
+        recent_sections: list[tuple[str, str, tuple[str, ...]]] = []
+
+        def recent(name: str, sql: str, fields: tuple[str, ...] | None = None) -> None:
+            recent_sections.append((name, sql, fields or section_fields[name]))
+
+        recent("assignments",
+               "SELECT a.id,a.title,a.description,a.due_date,a.status,a.created_at,a.updated_at,"
+               "a.completed_at,c.title course_title FROM assignments a "
+               "LEFT JOIN courses c ON c.id=a.course_id WHERE a.assignee_id=? "
+               "ORDER BY a.created_at DESC,a.id DESC LIMIT 50",
+               ("id", "title", "description", "due_date", "status", "created_at",
+                "updated_at", "completed_at", "course_title"))
+        summary = {key: 0 for key in (
+            "enrollments_total", "active_enrollments", "billed_satang", "paid_satang",
+            "outstanding_satang", "classes_total", "attendance_present", "attendance_absent",
+            "teaching_entries", "approved_teaching_satang", "paid_payroll_satang",
+            "assignments_total",
+        )}
+        if person["role"] == "student":
+            totals = conn.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM enrollments WHERE student_id=?) enrollments_total,"
+                "(SELECT COUNT(*) FROM enrollments WHERE student_id=? AND status='active') active_enrollments,"
+                "(SELECT COALESCE(SUM(amount_satang),0) FROM invoices WHERE student_id=? AND status!='void') billed_satang,"
+                "(SELECT COALESCE(SUM(p.amount_satang),0) FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE i.student_id=?) paid_satang,"
+                "(SELECT COALESCE(SUM(MAX(x.amount_satang-x.paid_satang,0)),0) FROM "
+                "(SELECT i.amount_satang,COALESCE((SELECT SUM(p.amount_satang) FROM payments p "
+                "WHERE p.invoice_id=i.id),0) paid_satang FROM invoices i "
+                "WHERE i.student_id=? AND i.status!='void') x) outstanding_satang,"
+                "(SELECT COUNT(*) FROM session_students WHERE student_id=?) classes_total,"
+                "(SELECT COUNT(*) FROM attendance WHERE student_id=? AND status='present') attendance_present,"
+                "(SELECT COUNT(*) FROM attendance WHERE student_id=? AND status='absent') attendance_absent,"
+                "(SELECT COUNT(*) FROM assignments WHERE assignee_id=?) assignments_total",
+                (person_id,) * 9,
+            ).fetchone()
+            summary.update(dict(totals))
+            recent("enrollments",
+                   "SELECT e.id,e.status,e.created_at,c.id course_id,c.course_code,c.title course_title,"
+                   "c.subject,c.level,CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format "
+                   "FROM enrollments e JOIN courses c ON c.id=e.course_id "
+                   "LEFT JOIN course_formats f ON f.course_id=c.id WHERE e.student_id=? "
+                   "ORDER BY e.created_at DESC,e.id DESC LIMIT 50")
+            recent("invoices",
+                   "SELECT i.id,i.invoice_number,i.enrollment_id,i.description,i.amount_satang,i.status,"
+                   "i.due_date,i.created_at,COALESCE((SELECT SUM(p.amount_satang) FROM payments p "
+                   "WHERE p.invoice_id=i.id),0) paid_satang FROM invoices i WHERE i.student_id=? "
+                   "ORDER BY i.created_at DESC,i.id DESC LIMIT 50")
+            recent("payments",
+                   "SELECT p.id,p.invoice_id,i.invoice_number,p.amount_satang,p.method,p.reference,"
+                   "p.recorded_at,r.id receipt_id,r.receipt_number FROM payments p "
+                   "JOIN invoices i ON i.id=p.invoice_id LEFT JOIN receipts r ON r.payment_id=p.id "
+                   "WHERE i.student_id=? ORDER BY p.recorded_at DESC,p.id DESC LIMIT 50")
+            recent("payment_claims",
+                   "SELECT pc.id,pc.invoice_id,i.invoice_number,pc.amount_satang,pc.reference,"
+                   "pc.status,pc.created_at,pc.reviewed_at,COALESCE(v.verdict,'needs_review') verification_status "
+                   "FROM payment_claims pc JOIN invoices i ON i.id=pc.invoice_id "
+                   "LEFT JOIN payment_claim_verifications v ON v.claim_id=pc.id "
+                   "WHERE pc.student_id=? ORDER BY pc.created_at DESC,pc.id DESC LIMIT 50")
+            recent("receipts",
+                   "SELECT id,receipt_number,invoice_number,description,course_code,course_title,"
+                   "amount_satang,method,reference,paid_at,issued_at FROM receipts "
+                   "WHERE student_id=? ORDER BY paid_at DESC,id DESC LIMIT 50")
+            recent("classes",
+                   "SELECT s.id,s.room_name,s.starts_at,s.ends_at,s.status,c.title course_title,"
+                   "c.course_code,u.name teacher_name,a.status attendance_status,a.recorded_at "
+                   "FROM session_students ss JOIN class_sessions s ON s.id=ss.session_id "
+                   "JOIN courses c ON c.id=s.course_id JOIN users u ON u.id=s.teacher_id "
+                   "LEFT JOIN attendance a ON a.session_id=s.id AND a.student_id=ss.student_id "
+                   "WHERE ss.student_id=? ORDER BY s.starts_at DESC,s.id DESC LIMIT 50")
+        else:
+            totals = conn.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM class_sessions WHERE teacher_id=?) classes_total,"
+                "(SELECT COUNT(*) FROM time_entries WHERE teacher_id=?) teaching_entries,"
+                "(SELECT COALESCE(SUM(amount_satang),0) FROM time_entries "
+                "WHERE teacher_id=? AND status IN ('approved','payroll_locked','paid')) approved_teaching_satang,"
+                "(SELECT COALESCE(SUM(total_satang),0) FROM payroll_runs "
+                "WHERE teacher_id=? AND status='paid') paid_payroll_satang,"
+                "(SELECT COUNT(*) FROM assignments WHERE assignee_id=?) assignments_total",
+                (person_id,) * 5,
+            ).fetchone()
+            summary.update(dict(totals))
+            recent("courses",
+                   "SELECT c.id,c.course_code,c.title,c.subject,c.level,c.active,c.created_at,"
+                   "CASE WHEN f.course_id IS NULL THEN 'group' ELSE 'individual' END course_format "
+                   "FROM courses c LEFT JOIN course_formats f ON f.course_id=c.id WHERE c.teacher_id=? "
+                   "ORDER BY c.created_at DESC,c.id DESC LIMIT 50")
+            recent("classes",
+                   "SELECT s.id,s.room_name,s.starts_at,s.ends_at,s.status,c.title course_title,"
+                   "c.course_code,(SELECT COUNT(*) FROM session_students ss WHERE ss.session_id=s.id) roster_count "
+                   "FROM class_sessions s JOIN courses c ON c.id=s.course_id WHERE s.teacher_id=? "
+                   "ORDER BY s.starts_at DESC,s.id DESC LIMIT 50")
+            recent("teaching",
+                   "SELECT t.id,t.session_id,t.actual_start,t.actual_end,t.break_minutes,t.status,"
+                   "t.payable_minutes,t.student_count,t.rate_satang_per_hour,t.amount_satang,"
+                   "t.submitted_at,t.reviewed_at,t.rejection_reason,s.room_name,c.title course_title "
+                   "FROM time_entries t JOIN class_sessions s ON s.id=t.session_id "
+                   "JOIN courses c ON c.id=s.course_id WHERE t.teacher_id=? "
+                   "ORDER BY t.submitted_at DESC,t.id DESC LIMIT 50")
+            recent("payroll",
+                   "SELECT id,period,status,total_satang,created_at,finalized_at,paid_at,payment_reference "
+                   "FROM payroll_runs WHERE teacher_id=? ORDER BY period DESC,created_at DESC,id DESC LIMIT 50")
+            recent("availability",
+                   "SELECT id,starts_at,ends_at,active,created_at FROM teacher_availability "
+                   "WHERE teacher_id=? ORDER BY starts_at DESC,id DESC LIMIT 50")
+
+        # Turso executes each SELECT over the network. Return the bounded
+        # detail sections through one JSON aggregate query rather than one
+        # remote round trip per table. All identifiers here are hardcoded.
+        bundled_columns = []
+        for name, sql, fields in recent_sections:
+            if not re.fullmatch(r"[a-z_]+", name) or any(
+                not re.fullmatch(r"[a-z_]+", field) for field in fields
+            ):
+                raise ValueError("Invalid history column")
+            properties = ",".join(f"'{field}',item.{field}" for field in fields)
+            bundled_columns.append(
+                "COALESCE((SELECT json_group_array(json_object(" + properties + ")) "
+                "FROM (" + sql + ") item),'[]') AS " + name
+            )
+        bundled = conn.execute("SELECT " + ",".join(bundled_columns),
+                               (person_id,) * len(recent_sections)).fetchone()
+        for name, _, _ in recent_sections:
+            sections[name] = json.loads(bundled[name])
+
+        return Response(200, {"person": person, "summary": summary, **sections,
+                              "timeline": timeline, "next_cursor": next_cursor})
+
     def _class_list(self, conn: sqlite3.Connection, *, student_id: str | None = None,
                     teacher_id: str | None = None) -> list[dict]:
         criterion = ""
@@ -2726,7 +3001,12 @@ class PhysicsPlusApp:
     @staticmethod
     def _admin_overview(conn: sqlite3.Connection) -> Response:
         """One read for the first screen; detailed records remain in existing APIs."""
-        today = datetime.now(BANGKOK).date().isoformat()
+        local_now = datetime.now(BANGKOK)
+        today = local_now.date().isoformat()
+        month_start = int(local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp())
+        next_month = (local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                      + timedelta(days=32)).replace(day=1)
+        next_month_start = int(next_month.timestamp())
         row = conn.execute(
             "WITH invoice_totals AS ("
             "SELECT i.id,i.amount_satang,i.status,i.due_date,"
@@ -2742,8 +3022,14 @@ class PhysicsPlusApp:
             "(SELECT COUNT(*) FROM enrollments e WHERE e.status='active' "
             "AND NOT EXISTS(SELECT 1 FROM course_formats f WHERE f.course_id=e.course_id) "
             "AND NOT EXISTS(SELECT 1 FROM invoices i WHERE i.enrollment_id=e.id)) unbilled_count,"
-            "(SELECT COUNT(*) FROM notification_outbox WHERE status='dead') failed_notices",
-            (today,),
+            "(SELECT COUNT(*) FROM notification_outbox WHERE status='dead') failed_notices,"
+            "(SELECT COUNT(*) FROM users WHERE role='student') student_count,"
+            "(SELECT COUNT(*) FROM users WHERE role='teacher') teacher_count,"
+            "(SELECT COUNT(*) FROM courses WHERE active=1) active_course_count,"
+            "(SELECT COUNT(*) FROM enrollments WHERE status='active') active_enrollment_count,"
+            "(SELECT COUNT(*) FROM class_sessions WHERE status='scheduled' AND starts_at>=?) upcoming_class_count,"
+            "(SELECT COALESCE(SUM(amount_satang),0) FROM payments WHERE recorded_at>=? AND recorded_at<?) paid_this_month_satang",
+            (today, now(), month_start, next_month_start),
         ).fetchone()
         return Response(200, dict(row))
 
@@ -2827,6 +3113,34 @@ class PhysicsPlusApp:
             "WHERE n.status='dead' ORDER BY n.created_at DESC,n.id DESC LIMIT 20"
         ).fetchall()
         return {"counts": counts, "failed": [dict(row) for row in failed]}
+
+    def _queue_notification_test(self, conn: sqlite3.Connection, actor: sqlite3.Row,
+                                 data: dict) -> Response:
+        """Queue one private test email to the configured admin destination.
+
+        This audit entity has no Sheet dataset mapping. The persistent audit
+        row also limits tests across serverless instances and admin sessions.
+        """
+        if data:
+            fail(400, "invalid_input", "This action does not accept any fields")
+        from mailer import delivery_configured
+        destination = os.getenv("PH_ADMIN_NOTIFICATION_EMAIL", "")
+        try:
+            if not destination or not delivery_configured():
+                fail(503, "email_unconfigured", "Email delivery is not configured")
+            normalize_email(destination)
+        except ApiError:
+            fail(503, "email_unconfigured", "Email delivery is not configured")
+        current = now()
+        recent = conn.execute(
+            "SELECT 1 FROM audit_events WHERE entity='email_test' AND action='request' "
+            "AND created_at>? LIMIT 1", (current - 60,)
+        ).fetchone()
+        if recent:
+            fail(429, "rate_limited", "Please wait a minute before testing email again")
+        event_id = self.audit(conn, actor["id"], "email_test", uid(), "request")
+        self.enqueue_notice(conn, event_id, "email_test")
+        return Response(202, {"queued": True})
 
     @staticmethod
     def _payment_account(conn: sqlite3.Connection) -> dict:

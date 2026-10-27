@@ -17,7 +17,7 @@
     pending_confirmation: 'รอยืนยันอัตรา', active: 'กำลังเรียน'
   };
   const $ = (id) => document.getElementById(id);
-  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], loadingClasses: false, availability: [], tasks: [], inbox: { notifications: [], unread_count: 0 }, revision: null, paymentAccount: null, paymentInvoiceId: '', sheetSyncStatus: null, individualBilling: null, individualBillingPeriod: '', individualBillingBusy: false, individualBillingError: '', nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '', loadingDetails: false, refreshBusy: false };
+  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], loadingClasses: false, availability: [], tasks: [], inbox: { notifications: [], unread_count: 0 }, revision: null, paymentAccount: null, paymentInvoiceId: '', sheetSyncStatus: null, emailTestStatus: '', emailTestFailed: false, individualBilling: null, individualBillingPeriod: '', individualBillingBusy: false, individualBillingError: '', peopleSearch: { query: '', role: 'all', rows: [], hasMore: false, loading: false, error: '', searched: false }, nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '', loadingDetails: false, refreshBusy: false };
   let activeTasks = 0;
   let individualBillingRequest = 0;
   let adminClaimIds = null;
@@ -28,6 +28,8 @@
   let loadGeneration = 0;
   let sheetStatusRefreshTimer = 0;
   let displayFontLoadScheduled = false;
+  let peopleSearchTimer = 0;
+  let peopleSearchRequest = 0;
   function loadDisplayFontsAfterPaint() {
     if (displayFontLoadScheduled) return;
     displayFontLoadScheduled = true;
@@ -325,7 +327,7 @@
       if (response.status === 401 && path !== '/api/me') location.replace('index.html');
       throw error;
     }
-    if (method !== 'GET' && state.me?.role === 'admin' && path !== '/api/admin/sheet-sync/retry') {
+    if (method !== 'GET' && state.me?.role === 'admin' && !['/api/admin/sheet-sync/retry', '/api/admin/notification-test'].includes(path)) {
       window.clearTimeout(sheetStatusRefreshTimer);
       sheetStatusRefreshTimer = window.setTimeout(fetchSheetSyncStatus, 400);
     }
@@ -553,7 +555,7 @@
     const inboxButton = element('button', 'inbox-button');
     inboxButton.type = 'button'; inboxButton.id = 'inbox-button';
     inboxButton.dataset.action = 'open-inbox';
-    inboxButton.innerHTML = '<span aria-hidden="true">✉</span><span id="inbox-badge" class="payment-alert-badge" hidden>0</span>';
+    inboxButton.innerHTML = '<svg class="header-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4.5 7 7.5 6 7.5-6"/></svg><span class="header-action-label">ข้อความ</span><span id="inbox-badge" class="payment-alert-badge" hidden>0</span>';
     inboxButton.setAttribute('aria-label', 'การแจ้งเตือนของฉัน');
     document.querySelector('.header-actions').prepend(inboxButton);
     const inboxToast = element('aside', 'inbox-toast');
@@ -564,7 +566,7 @@
       const alertButton = element('button', 'payment-alert-button');
       alertButton.type = 'button'; alertButton.id = 'payment-alert-button';
       alertButton.dataset.action = 'open-payment-alerts';
-      alertButton.innerHTML = '<span aria-hidden="true">🔔</span><span id="payment-alert-badge" class="payment-alert-badge" hidden>0</span>';
+      alertButton.innerHTML = '<svg class="header-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z"/><path d="M10 21h4"/></svg><span class="header-action-label">แจ้งชำระ</span><span id="payment-alert-badge" class="payment-alert-badge" hidden>0</span>';
       alertButton.setAttribute('aria-label', 'รายการแจ้งชำระรอตรวจ 0 รายการ');
       document.querySelector('.header-actions').prepend(alertButton);
       const toast = element('aside', 'payment-alert-toast');
@@ -631,7 +633,14 @@
       <section id="teacher-time" class="panel new-section"><h2>ลงเวลาสอนจริง</h2><p class="muted">เวลาอ้างอิงประเทศไทย (UTC+7) บันทึกได้หลังสอนเสร็จ และต้องใกล้คาบที่กำหนด</p><form data-action="teacher-time" class="live-form live-form-grid"><label>คาบเรียน<select name="session_id" id="time-session" required></select></label><label>เริ่มสอนจริง<input name="actual_start" id="actual-start" type="datetime-local" required></label><label>เลิกสอนจริง<input name="actual_end" id="actual-end" type="datetime-local" required></label><label>พัก (นาที)<input name="break_minutes" type="number" min="0" max="480" value="0" required></label><button type="submit" class="primary">ส่งเวลาสอนให้ตรวจ</button></form><p class="foot">ระบบจะตรวจเวลาซ้อนและคำนวณค่าจ้างหลังผู้ดูแลเช็กชื่อครบและยืนยันอัตราแล้ว</p></section>
       <section id="teacher-payroll" class="panel new-section"><h2>ประวัติค่าจ้างของฉัน</h2><p class="muted" id="teacher-approved-unpaid"></p><div class="tablewrap"><table><thead><tr><th>งวด</th><th>ยอด</th><th>สถานะ</th><th>วันที่จ่าย</th><th>รายละเอียด</th></tr></thead><tbody id="teacher-payroll-rows"></tbody></table></div></section>`;
     return `
-      <section id="overview" class="new-section"><div class="stats"><div class="stat"><span>คงค้างในใบแจ้งยอดล่าสุด</span><strong id="admin-outstanding">—</strong><small>จาก 100 รายการล่าสุดที่แสดง</small></div><div class="stat"><span>รายการแจ้งชำระรอตรวจ</span><strong id="admin-claim-count">—</strong><small>ตรวจเงินก่อนยืนยัน</small></div><div class="stat"><span>เวลาสอนรอตรวจ</span><strong id="admin-time-count">—</strong><small>ต้องเช็กชื่อครบและมีอัตราที่ยืนยัน</small></div></div></section>
+      <section id="overview" class="new-section admin-overview">
+        <div class="admin-overview-lead"><div><span class="admin-overview-kicker">ADMIN CONTROL CENTER</span><h2>ภาพรวมการดูแลร้าน</h2><p>ยอดและจำนวนจากฐานข้อมูลล่าสุด เลือกงานสำคัญหรือค้นหาประวัติรายบุคคลได้จากหน้านี้</p></div><div class="admin-overview-shortcuts"><button type="button" data-action="jump" data-target="admin-claims">ตรวจการชำระ</button><button type="button" data-action="jump" data-target="admin-classroom">จัดห้องเรียน</button><button type="button" data-action="jump" data-target="admin-accounts">จัดการบัญชี</button></div></div>
+        <div class="stats admin-primary-stats"><div class="stat"><span>ยอดค่าเรียนคงค้างทั้งหมด</span><strong id="admin-outstanding">—</strong><small>รวมใบแจ้งยอดที่ยังไม่ยกเลิก</small></div><div class="stat"><span>รายการแจ้งชำระรอตรวจ</span><strong id="admin-claim-count">—</strong><small>ตรวจยอดเข้าธนาคารก่อนอนุมัติ</small></div><div class="stat"><span>เวลาสอนรอตรวจ</span><strong id="admin-time-count">—</strong><small>เช็กชื่อและอัตราค่าจ้างก่อนอนุมัติ</small></div></div>
+        <div class="admin-metric-grid" aria-label="สถิติการดำเนินงาน"><article class="admin-mini-metric"><span>นักเรียนที่ใช้งาน</span><strong id="admin-student-total">—</strong><small>บัญชีนักเรียน</small></article><article class="admin-mini-metric"><span>ครูผู้สอน</span><strong id="admin-teacher-total">—</strong><small>รวมครูในทะเบียน</small></article><article class="admin-mini-metric"><span>กำลังเรียน</span><strong id="admin-enrollment-total">—</strong><small>รายการสมัครที่ใช้งาน</small></article><article class="admin-mini-metric"><span>คอร์สที่เปิด</span><strong id="admin-course-total">—</strong><small>รายวิชาที่เปิดรับ</small></article><article class="admin-mini-metric"><span>คาบเรียนถัดไป</span><strong id="admin-upcoming-total">—</strong><small>คาบที่ยังไม่สิ้นสุด</small></article><article class="admin-mini-metric"><span>รับชำระเดือนนี้</span><strong id="admin-monthly-paid">—</strong><small>ยอดที่บันทึกรับแล้ว</small></article></div>
+        <div id="admin-overview-ops"></div><div id="admin-overview-snapshot"></div>
+        <section id="admin-people" class="panel admin-people-panel"><div class="panel-head"><div><span class="admin-overview-kicker">PEOPLE &amp; HISTORY</span><h2>ค้นหาและตรวจประวัติรายบุคคล</h2><p class="muted">ค้นหาจากชื่อ อีเมล หรือรหัสประจำตัว แล้วเปิดดูการเรียน การสอน การเงิน และประวัติการเปลี่ยนแปลง</p></div></div><form id="admin-people-search-form" class="admin-people-search" role="search"><label for="admin-people-query">คำค้น<input id="admin-people-query" type="search" autocomplete="off" maxlength="80" placeholder="พิมพ์ชื่อ รหัส หรืออีเมล"></label><label for="admin-people-role">ประเภท<select id="admin-people-role"><option value="all">นักเรียนและครู</option><option value="student">นักเรียน</option><option value="teacher">ครูผู้สอน</option></select></label><button type="submit" class="primary">ค้นหาข้อมูล</button></form><p id="admin-people-status" class="admin-people-status muted" role="status" aria-live="polite">พิมพ์อย่างน้อย 2 ตัวอักษรเพื่อค้นหา โดยระบบจะโหลดเฉพาะรายการที่ตรงกัน</p><div id="admin-people-results" class="admin-people-results"></div></section>
+        <div id="admin-overview-mail"></div>
+      </section>
       <section id="admin-staff" class="panel new-section"><div class="panel-head staff-panel-head"><div><h2>ทะเบียนครูผู้สอน</h2><p class="muted">จัดการครูเหมือนทะเบียนพนักงาน ผู้ดูแลเลือกครูประจำคอร์สและตารางสอนได้แม้ครูยังไม่มีบัญชีเข้าใช้ระบบ</p></div><button type="button" class="primary" data-action="staff-add">+ เพิ่มครู</button></div><div class="staff-summary"><span id="staff-total">ครูทั้งหมด — คน</span><span id="staff-pending">รอเปิดบัญชี — คน</span></div><label class="admin-search-label" for="admin-staff-search">ค้นหาชื่อหรือรหัสครู<input id="admin-staff-search" type="search" autocomplete="off" placeholder="ค้นหารายชื่อครู"></label><div class="tablewrap"><table><thead><tr><th>รหัสครู</th><th>ชื่อครู</th><th>การเข้าใช้ระบบ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-staff-rows"></tbody></table></div><p class="foot">การเปิดบัญชีครูต้องใช้อีเมลจริงของครู ระบบจะแสดงรหัสผ่านชั่วคราวเพียงครั้งเดียว</p></section>
       <section id="admin-accounts" class="panel new-section"><div class="panel-head"><div><h2>จัดการบัญชีนักเรียน</h2><p class="muted">สร้างบัญชี รีเซ็ตรหัสผ่านชั่วคราว และเปิดหรือปิดสิทธิ์เข้าใช้ระบบ</p></div></div><form data-action="admin-user-create" class="live-form live-form-grid"><label>ชื่อ–นามสกุล<input name="name" required maxlength="120"></label><label>อีเมล<input name="email" type="email" required autocomplete="off"></label><input name="role" type="hidden" value="student"><button type="submit" class="primary">สร้างบัญชีนักเรียน</button></form><p class="foot">รหัสผ่านชั่วคราวจะแสดงเพียงครั้งเดียว ผู้รับต้องเปลี่ยนรหัสเมื่อเข้าสู่ระบบครั้งแรก</p><label class="admin-search-label" for="admin-user-search">ค้นหาชื่อ รหัส หรืออีเมล<input id="admin-user-search" type="search" autocomplete="off" placeholder="พิมพ์เพื่อค้นหาบัญชี"></label><div class="tablewrap"><table><thead><tr><th>รหัสประจำตัว</th><th>ชื่อ / บัญชี</th><th>ประเภท</th><th>สถานะ</th><th>รหัสชั่วคราว</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-user-rows"></tbody></table></div></section>
       <section id="admin-finance" class="new-section"><section class="panel"><h2>แจ้งยอดค่าเรียนคอร์สกลุ่ม</h2><p class="muted">นักเรียนที่ยืนยันซื้อคอร์สกลุ่มจะได้รับยอดตามราคาคอร์ส คอร์สตัวต่อตัวสรุปแยกตามชั่วโมงสอนจริงเมื่อสิ้นเดือน</p><form data-action="admin-invoice" class="live-form live-form-grid"><label>นักเรียน / คอร์สกลุ่มที่ยังไม่แจ้งยอด<select name="enrollment_id" id="invoice-enrollment" required></select></label><label>ค่าเรียนที่แจ้ง (บาท)<input name="amount" id="invoice-amount" inputmode="decimal" required placeholder="เลือกคอร์สเพื่อดึงราคา"></label><label>วันครบกำหนด<input name="due_date" type="date" required></label><label>รายละเอียด<input name="description" maxlength="250" placeholder="เช่น ค่าเรียนคอร์สคณิตศาสตร์"></label><button type="submit" class="primary">แจ้งยอดให้นักเรียน</button></form><p class="foot">บัญชีรับโอนจะแสดงให้นักเรียนเฉพาะเมื่อเปิดรายละเอียดชำระเงินของคำสั่งซื้อ</p></section><div class="grid"><section class="panel"><h2>รายการแจ้งยอด</h2><div class="tablewrap"><table><thead><tr><th>เลขที่ / นักเรียน</th><th>ยอด</th><th>คงเหลือ</th><th>ครบกำหนด</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-invoices"></tbody></table></div></section><section class="panel" id="admin-claims"><h2>รายการแจ้งชำระรอตรวจ</h2><p class="muted">ระบบตรวจความสอดคล้องของข้อมูลสลิปเบื้องต้นเท่านั้น ผู้ดูแลต้องตรวจยอดที่เข้าบัญชีธนาคารจริงก่อนบันทึกว่า “ถูกต้อง” และยืนยันรับเงิน</p><div class="tablewrap"><table><thead><tr><th>นักเรียน / อ้างอิง</th><th>ยอด</th><th>ผลตรวจสลิป</th><th>ดำเนินการ</th></tr></thead><tbody id="admin-claims-rows"></tbody></table></div></section></div><section class="panel"><h2>บันทึกการรับเงินโดยผู้ดูแล</h2><p class="muted">สำหรับเงินที่ตรวจสอบแล้ว กรุณาใช้เลขอ้างอิงที่ตรวจยืนยันได้</p><form data-action="admin-payment" class="live-form live-form-grid"><label>ใบแจ้งยอด<select name="invoice_id" id="payment-invoice" required></select></label><label>จำนวนที่ได้รับ (บาท)<input name="amount" id="payment-amount" inputmode="decimal" required></label><label>วิธีรับเงิน<input name="method" required maxlength="30" placeholder="เช่น bank_transfer"></label><label>เลขอ้างอิง<input name="reference" required maxlength="120"></label><button type="submit" class="primary">บันทึกรับเงิน</button></form></section></section>
@@ -1100,7 +1109,9 @@
       assignedTasks.append(more);
     }
     grid.append(schedule, progress, assignedTasks); panel.append(grid);
-    stats.after(panel);
+    const adminSlot = role === 'admin' ? $('admin-overview-snapshot') : null;
+    if (adminSlot) adminSlot.append(panel);
+    else stats.after(panel);
   }
 
   function fetchSheetSyncStatus() {
@@ -1133,6 +1144,7 @@
   async function load({ initial = false, overviewCounts = null } = {}) {
     const role = state.me.role;
     const generation = ++loadGeneration;
+    let backgroundOverview = null;
     if (initial && role !== 'admin') {
       // Give the personal dashboard and timetable priority over secondary
       // reads. Starting every request together can overload a cold remote DB.
@@ -1212,6 +1224,7 @@
       // A deep link should display its selected section and a safe loading
       // placeholder as promptly as the overview does.
       const quickOverview = initial;
+      let latestOverview = overviewCounts || state.data?.overview_counts || null;
       const dashboardRequest = api('/api/admin/dashboard?compact=1').then((value) => ({ value }), (error) => ({ error }));
       const detailsRequest = Promise.all([
         api('/api/admin/rates'), api('/api/admin/payroll-runs'), api('/api/admin/invoices'),
@@ -1219,9 +1232,10 @@
       ]).then((value) => ({ value }), (error) => ({ error }));
       // The small first-screen read is optional: a failure or a slower reply
       // must never hold up the existing complete workspace.
-      const overviewRequest = quickOverview && !overviewCounts
+      const overviewRequest = !overviewCounts
         ? api('/api/admin/overview').then((value) => ({ value }), (error) => ({ error }))
         : null;
+      backgroundOverview = overviewRequest;
       if (quickOverview) {
         const first = overviewCounts
           ? { kind: 'overview', result: { value: overviewCounts } }
@@ -1230,6 +1244,7 @@
             Promise.all([dashboardRequest, detailsRequest]).then(() => ({ kind: 'full' }))
           ]);
         if (first.kind === 'overview' && !first.result.error) {
+          latestOverview = first.result.value;
           state.data = { overview_counts: first.result.value, invoices: [], users: [], staff: [] };
           state.courses = [];
           state.academic = null;
@@ -1247,7 +1262,7 @@
       const details = await detailsRequest;
       if (details.error) throw details.error;
       const [rates, payroll, tuition, academic, paymentAccount, availability, tasks] = details.value;
-      state.data = { ...dashboard, ...rates, ...payroll, invoices: tuition.invoices || dashboard.invoices || [], receipts: tuition.receipts || [], users: academic.users || [], staff: (academic.users || []).filter((person) => person.role === 'teacher' || person.role === 'admin'), unbilled_enrollments: tuition.enrollments || [] };
+      state.data = { ...dashboard, ...rates, ...payroll, overview_counts: latestOverview, invoices: tuition.invoices || dashboard.invoices || [], receipts: tuition.receipts || [], users: academic.users || [], staff: (academic.users || []).filter((person) => person.role === 'teacher' || person.role === 'admin'), unbilled_enrollments: tuition.enrollments || [] };
       state.courses = (academic.courses || []).filter((course) => course.active);
       state.academic = academic;
       state.classes = academic.classes || [];
@@ -1258,6 +1273,11 @@
       if (quickOverview) setAdminDetailsBusy(false);
     }
     renderWorkspace();
+    if (role === 'admin' && backgroundOverview) void backgroundOverview.then((result) => {
+      if (generation !== loadGeneration || result.error || !state.data) return;
+      state.data.overview_counts = result.value;
+      renderWhenIdle(generation);
+    });
     if (role === 'admin') fetchSheetSyncStatus();
   }
 
@@ -1802,6 +1822,256 @@
     });
   }
 
+  function renderAdminPeopleResults() {
+    const statusLine = $('admin-people-status');
+    const results = $('admin-people-results');
+    if (!statusLine || !results) return;
+    const search = state.peopleSearch;
+    results.replaceChildren();
+    if (search.loading) statusLine.textContent = 'กำลังค้นหาข้อมูลที่ตรงกัน…';
+    else if (search.error) statusLine.textContent = search.error;
+    else if (search.query.length < 2) statusLine.textContent = 'พิมพ์อย่างน้อย 2 ตัวอักษรเพื่อค้นหา โดยระบบจะโหลดเฉพาะรายการที่ตรงกัน';
+    else if (!search.rows.length) statusLine.textContent = 'ไม่พบนักเรียนหรือครูที่ตรงกับคำค้น';
+    else statusLine.textContent = `พบ ${search.rows.length.toLocaleString('th-TH')} รายการ${search.hasMore ? ' · พิมพ์รายละเอียดเพิ่มเพื่อจำกัดผลลัพธ์' : ''}`;
+    statusLine.classList.toggle('is-error', Boolean(search.error));
+    if (search.loading || search.query.length < 2 || search.error) return;
+    for (const person of search.rows) {
+      const card = element('article', 'admin-person-result');
+      const identity = element('div', 'admin-person-identity');
+      identity.append(element('strong', '', person.name || 'ไม่ระบุชื่อ'));
+      identity.append(element('span', 'record-code', person.public_code || 'ไม่มีรหัส'));
+      const meta = element('p', 'muted');
+      meta.textContent = [roleNames[person.role] || person.role, person.status === 'active' ? 'ใช้งาน' : 'ยังไม่เปิดใช้งาน', person.grade || '', person.school || '', person.email || ''].filter(Boolean).join(' · ');
+      identity.append(meta);
+      card.append(identity, actionButton('ดูประวัติ', 'person-history', person.id, 'person-history-open'));
+      results.append(card);
+    }
+  }
+
+  function requestAdminPeopleSearch(immediate = false) {
+    if (state.me?.role !== 'admin') return;
+    const query = $('admin-people-query')?.value.trim().replace(/\s+/g, ' ') || '';
+    const role = $('admin-people-role')?.value || 'all';
+    state.peopleSearch.query = query;
+    state.peopleSearch.role = ['all', 'student', 'teacher'].includes(role) ? role : 'all';
+    state.peopleSearch.error = '';
+    clearTimeout(peopleSearchTimer);
+    const requestId = ++peopleSearchRequest;
+    if (query.length < 2) {
+      state.peopleSearch.rows = [];
+      state.peopleSearch.hasMore = false;
+      state.peopleSearch.loading = false;
+      renderAdminPeopleResults();
+      return;
+    }
+    state.peopleSearch.loading = true;
+    renderAdminPeopleResults();
+    const run = async () => {
+      try {
+        const path = `/api/admin/people/search?q=${encodeURIComponent(query)}&role=${encodeURIComponent(state.peopleSearch.role)}`;
+        const response = await api(path);
+        if (requestId !== peopleSearchRequest) return;
+        state.peopleSearch.rows = Array.isArray(response.people) ? response.people : [];
+        state.peopleSearch.hasMore = Boolean(response.has_more);
+        state.peopleSearch.error = '';
+      } catch (error) {
+        if (requestId !== peopleSearchRequest) return;
+        state.peopleSearch.rows = [];
+        state.peopleSearch.hasMore = false;
+        state.peopleSearch.error = error.message || 'ค้นหาไม่สำเร็จ กรุณาลองอีกครั้ง';
+      } finally {
+        if (requestId === peopleSearchRequest) {
+          state.peopleSearch.loading = false;
+          renderAdminPeopleResults();
+        }
+      }
+    };
+    if (immediate) void run();
+    else peopleSearchTimer = window.setTimeout(run, 240);
+  }
+
+  function installAdminPeopleSearch() {
+    const form = $('admin-people-search-form');
+    if (!form) return;
+    $('admin-people-query').value = state.peopleSearch.query;
+    $('admin-people-role').value = state.peopleSearch.role;
+    $('admin-people-query').addEventListener('input', () => requestAdminPeopleSearch());
+    $('admin-people-role').addEventListener('change', () => requestAdminPeopleSearch(true));
+    form.addEventListener('submit', (event) => { event.preventDefault(); requestAdminPeopleSearch(true); });
+    renderAdminPeopleResults();
+  }
+
+  function personHistoryRecordSection(title, rows, describe, initiallyOpen = false) {
+    const section = element('details', 'person-history-section');
+    section.open = initiallyOpen && rows.length > 0;
+    const heading = element('summary', 'person-history-section-head');
+    heading.append(element('strong', 'person-history-section-title', title),
+      element('span', '', rows.length ? `${rows.length.toLocaleString('th-TH')} รายการล่าสุด` : 'ยังไม่มีรายการ'));
+    section.append(heading);
+    if (!rows.length) return section;
+    const list = element('div', 'person-history-records');
+    for (const row of rows) {
+      const [primary, secondary] = describe(row);
+      const item = element('article', 'person-history-record');
+      item.append(element('strong', '', primary || '—'), element('span', 'muted', secondary || '—'));
+      list.append(item);
+    }
+    section.append(list);
+    return section;
+  }
+
+  function personTimelineItem(event) {
+    const actionLabels = {
+      register: 'สมัครสมาชิก', login: 'เข้าสู่ระบบ', create: 'สร้างรายการ', admin_create: 'เพิ่มรายการโดยผู้ดูแล',
+      create_user: 'สร้างบัญชี', create_teacher_roster: 'เพิ่มครูในทะเบียน', activate_teacher_account: 'เปิดบัญชีครู',
+      update: 'แก้ไขข้อมูล', update_contact: 'แก้ไขข้อมูลติดต่อ', submit: 'ส่งตรวจ', resubmit: 'ส่งตรวจอีกครั้ง',
+      record: 'บันทึกรายการ', verify_slip: 'ตรวจหลักฐานการชำระ', approve: 'อนุมัติ', approve_override: 'อนุมัติยอดพิเศษ',
+      reject: 'ไม่อนุมัติ', cancel: 'ยกเลิก', complete: 'ทำงานเสร็จ', unassign: 'ย้ายผู้รับงาน',
+      finalize: 'ปิดงวด', mark_paid: 'บันทึกจ่ายแล้ว', reset_password: 'รีเซ็ตรหัสผ่าน',
+      change_password: 'เปลี่ยนรหัสผ่าน', change_amount: 'แก้ไขยอดเงิน', change_due_date: 'แก้วันครบกำหนด',
+      restore: 'คืนสถานะ', void: 'ยกเลิกใบแจ้งยอด', individual_monthly_create: 'ออกใบแจ้งยอดรายเดือน',
+      activate_owner_grid: 'เปิดใช้อัตรากลาง', create_confirmed: 'เพิ่มอัตราที่อนุมัติ', end: 'กำหนดวันสิ้นสุด'
+    };
+    const entityLabels = {
+      user: 'บัญชี', student_profile: 'ข้อมูลนักเรียน', enrollment: 'การสมัครเรียน',
+      invoice: 'ใบแจ้งยอด', payment: 'การรับเงิน', payment_claim: 'สลิปแจ้งชำระ',
+      class_session: 'คาบเรียน', attendance: 'การเข้าเรียน', time_entry: 'เวลาสอน',
+      payroll_run: 'งวดค่าจ้าง', payroll_adjustment: 'ปรับยอดค่าจ้าง', assignment: 'งานที่มอบหมาย',
+      course: 'คอร์สเรียน', teacher_availability: 'เวลาว่างครู', rate_rule: 'อัตราค่าจ้าง'
+    };
+    const item = element('article', 'person-timeline-item');
+    const detail = element('div');
+    detail.append(element('strong', '', actionLabels[event.action] || String(event.action || 'รายการอัปเดต').replace(/_/g, ' ')));
+    detail.append(element('span', 'muted', `${entityLabels[event.entity] || event.entity || 'ข้อมูล'}${event.actor_name ? ` · โดย ${event.actor_name}` : ''}`));
+    item.append(detail, element('time', '', thaiDateTime(event.created_at)));
+    return item;
+  }
+
+  function renderPersonHistoryDialog(dialog, details, personId) {
+    const person = details.person || {};
+    const summary = details.summary || {};
+    const rows = (key) => Array.isArray(details[key]) ? details[key] : [];
+    dialog.replaceChildren();
+    const top = element('div', 'person-history-top');
+    const titleGroup = element('div');
+    titleGroup.append(element('span', 'admin-overview-kicker', 'PERSON RECORD'),
+      element('h2', '', person.name || 'ประวัติรายบุคคล'),
+      element('p', 'muted', `${person.public_code || 'ไม่มีรหัส'} · ${roleNames[person.role] || person.role || 'บัญชี'} · ${person.status === 'active' ? 'ใช้งาน' : 'ยังไม่เปิดใช้งาน'}`));
+    const close = actionButton('ปิด', 'close-person-history', '', 'person-history-close');
+    top.append(titleGroup, close); dialog.append(top);
+    const identity = element('section', 'person-history-identity');
+    const facts = [
+      ['อีเมล', person.email || 'ยังไม่มีอีเมล'], ['วันที่สร้างบัญชี', thaiDateTime(person.created_at)],
+      ...(person.role === 'student' ? [
+        ['ระดับชั้น', person.grade || 'ยังไม่ระบุ'], ['โรงเรียน', person.school || 'ยังไม่ระบุ'],
+        ['ผู้ปกครอง', person.guardian_name || 'ยังไม่ระบุ'],
+        ['โทรศัพท์ผู้ปกครอง', person.guardian_phone || 'ยังไม่ระบุ'],
+        ['ความสัมพันธ์', ({ father: 'บิดา', mother: 'มารดา', guardian: 'ผู้ปกครอง', other: 'อื่น ๆ' })[person.guardian_relationship] || person.guardian_relationship || 'ยังไม่ระบุ']
+      ] : [['สถานะบัญชีครู', person.roster_pending ? 'อยู่ในทะเบียน รอเปิดบัญชี' : person.status === 'active' ? 'เข้าใช้ระบบได้' : 'ปิดบัญชี']])
+    ];
+    for (const [label, value] of facts) {
+      const fact = element('div', 'person-history-fact');
+      fact.append(element('span', '', label), element('strong', '', value));
+      identity.append(fact);
+    }
+    dialog.append(identity);
+    const summaryLabels = person.role === 'student' ? [
+      ['enrollments_total', 'คอร์สที่สมัคร'], ['active_enrollments', 'กำลังเรียน'],
+      ['billed_satang', 'แจ้งยอดทั้งหมด'], ['paid_satang', 'ชำระแล้ว'],
+      ['outstanding_satang', 'คงค้าง'], ['classes_total', 'คาบเรียน'],
+      ['attendance_present', 'มาเรียน'], ['attendance_absent', 'ขาดเรียน'],
+      ['assignments_total', 'งานที่ได้รับ']
+    ] : [
+      ['classes_total', 'คาบสอน'], ['teaching_entries', 'รายการลงเวลา'],
+      ['approved_teaching_satang', 'ค่าสอนอนุมัติ'], ['paid_payroll_satang', 'ค่าจ้างจ่ายแล้ว'],
+      ['assignments_total', 'งานที่ได้รับ']
+    ];
+    const summaryGrid = element('section', 'person-history-summary');
+    for (const [key, label] of summaryLabels) {
+      const card = element('div', 'person-history-summary-card');
+      const amount = key.endsWith('_satang') ? thaiMoney(summary[key]) : Number(summary[key] || 0).toLocaleString('th-TH');
+      card.append(element('span', '', label), element('strong', '', amount));
+      summaryGrid.append(card);
+    }
+    dialog.append(summaryGrid);
+    const sections = element('div', 'person-history-sections');
+    if (person.role === 'student') {
+      sections.append(
+        personHistoryRecordSection('การสมัครเรียน', rows('enrollments'), (r) => [r.course_title, `${r.course_code || '—'} · ${r.course_format === 'individual' ? 'ตัวต่อตัว' : 'คอร์สกลุ่ม'} · ${status(r.status)} · ${thaiDateTime(r.created_at)}`], true),
+        personHistoryRecordSection('ใบแจ้งยอดค่าเรียน', rows('invoices'), (r) => [r.invoice_number, `ยอด ${thaiMoney(r.amount_satang)} · รับแล้ว ${thaiMoney(r.paid_satang)} · ${status(r.status)} · กำหนด ${thaiDate(r.due_date)}`]),
+        personHistoryRecordSection('ประวัติรับเงิน', rows('payments'), (r) => [thaiMoney(r.amount_satang), `${r.invoice_number || 'ใบแจ้งยอด'} · ${r.method || 'รับเงิน'} · ${r.reference || 'ไม่มีเลขอ้างอิง'} · ${thaiDateTime(r.recorded_at)}${r.receipt_number ? ` · ใบสำคัญ ${r.receipt_number}` : ''}`]),
+        personHistoryRecordSection('ใบสำคัญรับเงิน', rows('receipts'), (r) => [r.receipt_number || 'ใบสำคัญ', `${r.course_title || r.description || 'ค่าเรียน'} · ${thaiMoney(r.amount_satang)} · รับ ${thaiDateTime(r.paid_at)} · ออก ${thaiDateTime(r.issued_at)}`]),
+        personHistoryRecordSection('สลิปที่ส่งตรวจ', rows('payment_claims'), (r) => [r.invoice_number || 'รายการแจ้งชำระ', `${thaiMoney(r.amount_satang)} · ${status(r.status)} · ผลตรวจ ${r.verification_status || 'รอตรวจ'} · ${thaiDateTime(r.created_at)}`])
+      );
+    }
+    sections.append(personHistoryRecordSection(person.role === 'teacher' ? 'คาบที่รับสอน' : 'ตารางเรียนและการเข้าเรียน', rows('classes'), (r) => [r.course_title, `${thaiDateTime(r.starts_at)} – ${thaiDateTime(r.ends_at)} · ${r.room_name || 'ยังไม่กำหนดห้อง'} · ${status(r.status)}${person.role === 'student' ? ` · ${r.attendance_status === 'present' ? 'มาเรียน' : r.attendance_status === 'absent' ? 'ขาดเรียน' : 'ยังไม่เช็กชื่อ'}` : ''}`], true));
+    if (person.role === 'teacher') {
+      sections.append(
+        personHistoryRecordSection('เวลาสอนจริง', rows('teaching'), (r) => [r.course_title || 'คาบสอน', `${thaiDateTime(r.actual_start)} – ${thaiDateTime(r.actual_end)} · ${status(r.status)} · ${thaiMoney(r.amount_satang)}`]),
+        personHistoryRecordSection('งวดค่าจ้าง', rows('payroll'), (r) => [r.period || 'งวดค่าจ้าง', `${thaiMoney(r.total_satang)} · ${status(r.status)}${r.paid_at ? ` · จ่าย ${thaiDateTime(r.paid_at)}` : ''}`]),
+        personHistoryRecordSection('คอร์สที่รับสอน', rows('courses'), (r) => [r.title || 'คอร์สเรียน', `${r.course_code || '—'} · ${r.course_format === 'individual' ? 'ตัวต่อตัว' : 'คอร์สกลุ่ม'} · ${r.active ? 'เปิดรับ' : 'ปิดรับ'}`]),
+        personHistoryRecordSection('เวลาว่างที่ประกาศ', rows('availability'), (r) => [r.active ? 'ช่วงเวลาว่าง' : 'นำช่วงว่างออกแล้ว', `${thaiDateTime(r.starts_at)} – ${thaiDateTime(r.ends_at)}`])
+      );
+    }
+    sections.append(personHistoryRecordSection('งานที่ได้รับมอบหมาย', rows('assignments'), (r) => [r.title || 'งาน', `${status(r.status)} · ${r.due_date ? `ส่ง ${thaiDate(r.due_date)}` : 'ไม่ระบุกำหนด'}${r.course_title ? ` · ${r.course_title}` : ''}`]));
+    dialog.append(sections);
+    const timelineSection = element('section', 'person-history-timeline');
+    timelineSection.append(element('h3', '', 'บันทึกเหตุการณ์ย้อนหลัง'));
+    const timeline = element('div', 'person-timeline-list');
+    const initialEvents = rows('timeline');
+    if (!initialEvents.length) timeline.append(element('p', 'muted', 'ยังไม่มีเหตุการณ์ที่บันทึกไว้'));
+    else for (const item of initialEvents) timeline.append(personTimelineItem(item));
+    timelineSection.append(timeline);
+    let cursor = details.next_cursor || null;
+    const more = element('button', 'person-history-more', 'ดูประวัติก่อนหน้านี้');
+    more.type = 'button';
+    const moreStatus = element('p', 'person-history-more-status');
+    moreStatus.setAttribute('role', 'status');
+    moreStatus.setAttribute('aria-live', 'polite');
+    moreStatus.hidden = true;
+    more.hidden = !cursor;
+    more.addEventListener('click', async () => {
+      if (!cursor) return;
+      more.disabled = true; more.textContent = 'กำลังโหลด…';
+      moreStatus.hidden = true;
+      try {
+        const next = await api(`/api/admin/people/${personId}/history?cursor=${encodeURIComponent(cursor)}`);
+        for (const item of Array.isArray(next.timeline) ? next.timeline : []) timeline.append(personTimelineItem(item));
+        cursor = next.next_cursor || null;
+        more.hidden = !cursor;
+      } catch (error) {
+        moreStatus.textContent = error.message || 'โหลดประวัติเพิ่มไม่สำเร็จ';
+        moreStatus.hidden = false;
+      } finally {
+        more.disabled = false;
+        more.textContent = 'ดูประวัติก่อนหน้านี้';
+      }
+    });
+    timelineSection.append(more, moreStatus); dialog.append(timelineSection);
+  }
+
+  async function showPersonHistoryDialog(personId) {
+    const dialog = $('live-dialog');
+    dialog.replaceChildren();
+    dialog.classList.add('person-history-dialog');
+    dialog.setAttribute('aria-label', 'ประวัติรายบุคคล');
+    const loading = element('div', 'person-history-loading');
+    loading.append(element('h2', '', 'กำลังเปิดประวัติ…'), element('p', 'muted', 'ดึงเฉพาะข้อมูลของบุคคลนี้จากฐานข้อมูล'));
+    dialog.append(loading);
+    dialog.onclose = () => { dialog.classList.remove('person-history-dialog'); dialog.removeAttribute('aria-label'); dialog.replaceChildren(); };
+    dialog.showModal();
+    try {
+      const details = await api(`/api/admin/people/${personId}/history`);
+      if (dialog.open) renderPersonHistoryDialog(dialog, details, personId);
+    } catch (error) {
+      if (!dialog.open) return;
+      dialog.replaceChildren(element('h2', '', 'เปิดประวัติไม่สำเร็จ'),
+        element('p', 'muted', error.message || 'กรุณาลองอีกครั้ง'));
+      const close = actionButton('ปิด', 'close-person-history');
+      dialog.append(close);
+    }
+  }
+
   function renderAdmin() {
     const invoices = state.data.invoices || [];
     const unbilled = (state.data.unbilled_enrollments || []).filter((item) =>
@@ -1827,6 +2097,7 @@
       if (person.email) identity.append(element('div', 'muted', person.email));
       cell(row, person.roster_pending ? 'รอเปิดบัญชี' : person.status === 'active' ? 'เข้าใช้ระบบได้' : 'ปิดบัญชี');
       const actions = cell(row, ''); actions.className = 'row-actions';
+      actions.append(actionButton('ประวัติ', 'person-history', person.id));
       actions.append(actionButton('แก้ชื่อ', 'edit-user', person.id));
       if (person.roster_pending) actions.append(actionButton('เปิดบัญชีครู', 'staff-activate', person.id, 'primary'));
       else {
@@ -1849,6 +2120,7 @@
       cell(row, roleNames[person.role] || person.role); cell(row, person.status === 'active' ? 'ใช้งาน' : 'ปิดใช้งาน');
       cell(row, person.must_change_password ? 'ต้องเปลี่ยนเมื่อเข้าสู่ระบบ' : 'เปลี่ยนแล้ว');
       const actions = cell(row, ''); actions.className = 'row-actions';
+      actions.append(actionButton('ประวัติ', 'person-history', person.id));
       actions.append(actionButton('ข้อมูลนักเรียน', 'admin-profile', person.id));
       actions.append(actionButton('แก้ชื่อ/อีเมล', 'edit-user', person.id));
       actions.append(actionButton('รีเซ็ตรหัส', 'reset-user', person.id));
@@ -1865,6 +2137,16 @@
       : `จาก ${invoices.length} ใบแจ้งยอดล่าสุดที่แสดง`;
     $('admin-claim-count').textContent = String(overview ? overview.pending_claims : claims.length);
     $('admin-time-count').textContent = String(overview ? overview.pending_times : times.length);
+    const metric = (id, value, money = false) => {
+      $(id).textContent = value === null || value === undefined || !Number.isFinite(Number(value))
+        ? '—' : money ? thaiMoney(Number(value)) : Number(value).toLocaleString('th-TH');
+    };
+    metric('admin-student-total', overview?.student_count);
+    metric('admin-teacher-total', overview?.teacher_count);
+    metric('admin-enrollment-total', overview?.active_enrollment_count);
+    metric('admin-course-total', overview?.active_course_count);
+    metric('admin-upcoming-total', overview?.upcoming_class_count);
+    metric('admin-monthly-paid', overview?.paid_this_month_satang, true);
     const overdue = invoices.filter((item) => item.status !== 'void' && item.due_date < bangkokToday() && item.amount_satang > item.paid_satang);
     const queue = element('section', 'panel action-queue');
     queue.append(element('h2', '', 'งานที่ต้องจัดการ'));
@@ -1880,7 +2162,7 @@
       queueItem(overview ? overview.failed_notices : Number(notificationCounts.dead) || 0, 'อีเมลส่งไม่สำเร็จ', 'ตรวจสถานะการแจ้งเตือน', 'admin-notifications', true)
     );
     queue.append(queueGrid);
-    $('overview').querySelector('.stats').after(queue);
+    $('admin-overview-ops').append(queue);
     const workload = workloadPanel([
       ['คอร์สที่ยังไม่มีใบแจ้งยอด', overview ? overview.unbilled_count : unbilled.length],
       ['รอตรวจการชำระ', overview ? overview.pending_claims : claims.length],
@@ -1888,11 +2170,24 @@
       ['ใบแจ้งยอดเลยกำหนด', overview ? overview.overdue_count : overdue.length],
       ['อีเมลส่งไม่สำเร็จ', overview ? overview.failed_notices : Number(notificationCounts.dead) || 0]
     ]);
-    queue.after(workload);
+    $('admin-overview-ops').append(workload);
     const notificationPanel = element('section', 'panel');
     notificationPanel.id = 'admin-notifications';
     notificationPanel.append(element('h2', '', 'สถานะอีเมลแจ้งเตือน'));
-    notificationPanel.append(element('p', 'muted', `รอส่ง ${Number(notificationCounts.pending || 0) + Number(notificationCounts.sending || 0)} · ส่งแล้ว ${Number(notificationCounts.sent) || 0} · ส่งไม่สำเร็จ ${Number(notificationCounts.dead) || 0}`));
+    const deliveryCounts = element('p', 'muted', `รอส่ง ${Number(notificationCounts.pending || 0) + Number(notificationCounts.sending || 0)} · ส่งแล้ว ${Number(notificationCounts.sent) || 0} · ส่งไม่สำเร็จ ${Number(notificationCounts.dead) || 0}`);
+    deliveryCounts.id = 'admin-email-counts';
+    notificationPanel.append(deliveryCounts);
+    const testActions = element('div', 'email-test-actions');
+    testActions.append(actionButton('ส่งอีเมลทดสอบ', 'send-test-email'));
+    testActions.append(element('span', 'muted', 'ส่งไปยังอีเมลผู้ดูแลที่ตั้งค่าไว้ เพื่อทดสอบการส่งจริง'));
+    notificationPanel.append(testActions);
+    const testStatus = element('p', 'email-test-status', state.emailTestStatus);
+    testStatus.id = 'email-test-status';
+    testStatus.setAttribute('role', 'status');
+    testStatus.setAttribute('aria-live', 'polite');
+    testStatus.hidden = !state.emailTestStatus;
+    testStatus.classList.toggle('is-error', state.emailTestFailed);
+    notificationPanel.append(testStatus);
     if (failedNotices.length) {
       const wrap = element('div', 'tablewrap');
       const table = element('table');
@@ -1911,8 +2206,9 @@
       }
       table.append(head, body); wrap.append(table); notificationPanel.append(wrap);
     } else notificationPanel.append(element('p', 'muted', 'ยังไม่มีอีเมลส่งไม่สำเร็จ'));
-    workload.after(notificationPanel);
-    if (overview) notificationPanel.hidden = true;
+    $('admin-overview-mail').append(notificationPanel);
+    notificationPanel.hidden = state.loadingDetails;
+    installAdminPeopleSearch();
     const enrollmentSelect = $('invoice-enrollment'); option(enrollmentSelect, '', 'เลือกนักเรียนและคอร์ส');
     for (const enrollment of unbilled) option(enrollmentSelect, enrollment.enrollment_id, `${enrollment.student_name} · ${enrollment.course_title}`);
     enrollmentSelect.addEventListener('change', () => {
@@ -2211,6 +2507,12 @@
     const button = event.target.closest('button[data-action]');
     if (!button) return;
     const action = button.dataset.action;
+    if (action === 'close-person-history') { $('live-dialog').close(); return; }
+    if (action === 'person-history') {
+      if (state.me?.role !== 'admin') return;
+      await task(button, () => showPersonHistoryDialog(validId(button.dataset.id)));
+      return;
+    }
     if (action === 'open-inbox') {
       await pollInbox();
       showInbox();
@@ -2279,6 +2581,40 @@
         state.sheetSyncStatus = await api('/api/admin/sheet-sync/retry', 'POST', {});
         renderSheetSyncStatus();
         feedback(`ตรวจการซิงก์แล้ว · เหลือ ${Number(state.sheetSyncStatus.pending || 0)} รายการ`);
+      });
+      return;
+    }
+    if (action === 'send-test-email') {
+      if (state.me?.role !== 'admin') return;
+      await task(button, async () => {
+        const status = $('email-test-status');
+        const update = (message, failed = false) => {
+          state.emailTestStatus = message;
+          state.emailTestFailed = failed;
+          if (status) {
+            status.textContent = message;
+            status.hidden = false;
+            status.classList.toggle('is-error', failed);
+          }
+          feedback('');
+        };
+        update('กำลังส่งคำขอทดสอบ…');
+        try {
+          await api('/api/admin/notification-test', 'POST', {});
+          update('เพิ่มอีเมลทดสอบเข้าคิวแล้ว กรุณาตรวจสถานะส่งจริงในรายการอีเมลแจ้งเตือน');
+          for (const wait of [2000, 7000]) window.setTimeout(() => {
+            void api('/api/admin/notification-status').then((result) => {
+              if (state.data) state.data.notifications = result;
+              const line = $('admin-email-counts');
+              const counts = result.counts || {};
+              if (line) line.textContent = `รอส่ง ${Number(counts.pending || 0) + Number(counts.sending || 0)} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
+            }).catch(() => {});
+          }, wait);
+        } catch (error) {
+          update(error.code === 'email_unconfigured'
+            ? 'ยังไม่ได้ตั้งค่าการส่งอีเมล กรุณาตรวจการตั้งค่าในระบบ'
+            : 'ส่งคำขอทดสอบไม่สำเร็จ กรุณาลองใหม่หรือตรวจการตั้งค่าอีเมล', true);
+        }
       });
       return;
     }
