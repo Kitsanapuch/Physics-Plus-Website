@@ -2088,7 +2088,8 @@
     if (countLine) countLine.textContent = `รอส่ง ${Number(counts.pending || 0) + Number(counts.sending || 0)} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
     const recent = Array.isArray(notifications.recent) ? notifications.recent : [];
     const configIssue = recent.some((item) => item.status === 'pending' &&
-      ['not_configured', 'invalid_configuration'].includes(item.last_error_code));
+      ['not_configured', 'invalid_configuration', 'invalid_gmail_sender',
+        'invalid_app_password_format', 'gmail_auth_rejected', 'smtp_tls_failure'].includes(item.last_error_code));
     const warning = $('admin-email-warning');
     if (warning) warning.hidden = !configIssue;
     const recentHost = $('admin-email-recent');
@@ -2101,6 +2102,10 @@
         const errorLabels = {
           not_configured: 'ยังไม่ได้ตั้งค่าการส่งอีเมล',
           invalid_configuration: 'การตั้งค่า Gmail หรือการยืนยันตัวตนไม่สำเร็จ',
+          invalid_gmail_sender: 'อีเมลผู้ส่ง Gmail ไม่ถูกต้อง',
+          invalid_app_password_format: 'App Password ต้องมีอักขระ 16 ตัว',
+          gmail_auth_rejected: 'Gmail ปฏิเสธการเข้าสู่ระบบด้วย App Password',
+          smtp_tls_failure: 'ตรวจสอบความปลอดภัยการเชื่อมต่อ Gmail ไม่สำเร็จ',
           provider_rejected: 'ผู้ให้บริการปฏิเสธการส่ง',
           temporary_failure: 'บริการอีเมลขัดข้องชั่วคราว',
           retry_expired: 'ส่งซ้ำเกินเวลาที่กำหนด'

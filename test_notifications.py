@@ -197,6 +197,31 @@ class NotificationOutboxTests(unittest.TestCase):
         )
         self.assertEqual(second["sent"], 1)
 
+    def test_distinct_gmail_configuration_failures_remain_retryable(self) -> None:
+        self.register_student()
+        for code in ("invalid_gmail_sender", "invalid_app_password_format",
+                     "gmail_auth_rejected", "smtp_tls_failure"):
+            with self.subTest(code=code):
+                with self.owner.connect() as conn:
+                    conn.execute(
+                        "UPDATE notification_outbox SET status='pending',attempts=0,"
+                        "first_attempt_at=?,next_attempt_at=?,last_error_code=?",
+                        (now() - 8 * 24 * 3600, now(), code),
+                    )
+                batch = self.owner.dispatch_outbox(
+                    lambda address, *, event_id: MailResult(False, code),
+                    limit=1, admin_email="admin@example.com",
+                )
+                self.assertEqual(batch["retrying"], 1)
+                with self.owner.connect() as conn:
+                    row = conn.execute(
+                        "SELECT status,attempts,first_attempt_at,last_error_code,next_attempt_at "
+                        "FROM notification_outbox"
+                    ).fetchone()
+                self.assertEqual((row["status"], row["attempts"], row["first_attempt_at"],
+                                  row["last_error_code"]), ("pending", 0, None, code))
+                self.assertGreater(row["next_attempt_at"], now())
+
     def test_notification_status_is_admin_only_and_has_no_address(self) -> None:
         student_id = self.register_student()
         student_view = self.owner.handle(
@@ -253,7 +278,7 @@ class NotificationOutboxTests(unittest.TestCase):
         with self.owner.connect() as conn:
             first = conn.execute("SELECT id FROM notification_outbox").fetchone()["id"]
             conn.execute(
-                "UPDATE notification_outbox SET last_error_code='invalid_configuration',"
+                "UPDATE notification_outbox SET last_error_code='gmail_auth_rejected',"
                 "next_attempt_at=? WHERE id=?", (now() + 3600, first),
             )
             conn.execute("BEGIN IMMEDIATE")
@@ -314,7 +339,7 @@ class NotificationOutboxTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(first_row["status"], "pending")
         self.assertLessEqual(first_row["next_attempt_at"], now())
-        self.assertEqual(first_row["last_error_code"], "invalid_configuration")
+        self.assertEqual(first_row["last_error_code"], "gmail_auth_rejected")
         self.assertGreater(other_row["next_attempt_at"], now())
         self.assertEqual(other_row["last_error_code"], "temporary_failure")
         self.assertEqual(retry_audits, 1)
