@@ -28,6 +28,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
+from mailer import email_mode
+
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
 SESSION_SECONDS = 7 * 24 * 3600
@@ -1214,24 +1216,25 @@ class PhysicsPlusApp:
 
     def enqueue_notice(self, conn: sqlite3.Connection, audit_event_id: str, event_type: str,
                        recipient_user_id: str | None = None) -> None:
-        """Queue a fixed, detail-free notice in the same business transaction.
+        """Save an in-app notice and optionally queue a detail-free email.
 
-        A unique audit event can create only one notice. Admin destination is
-        resolved from the environment at dispatch, so missing email setup
-        does not silently discard an update.
+        A unique audit event can create only one notice of each kind. Inbox
+        delivery does not depend on email setup. Existing email outbox rows
+        remain intact while PH_EMAIL_MODE=inbox_only.
         """
         if recipient_user_id:
             recipient = conn.execute("SELECT id,role,email FROM users WHERE id=?", (recipient_user_id,)).fetchone()
             if recipient and is_pending_teacher(recipient):
                 return
         current = now()
-        conn.execute(
-            "INSERT INTO notification_outbox"
-            "(id,audit_event_id,event_type,recipient_kind,recipient_user_id,next_attempt_at,created_at) "
-            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(audit_event_id) DO NOTHING",
-            (uid(), audit_event_id, event_type, "user" if recipient_user_id else "admin",
-             recipient_user_id, current, current),
-        )
+        if email_mode() == "email":
+            conn.execute(
+                "INSERT INTO notification_outbox"
+                "(id,audit_event_id,event_type,recipient_kind,recipient_user_id,next_attempt_at,created_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(audit_event_id) DO NOTHING",
+                (uid(), audit_event_id, event_type, "user" if recipient_user_id else "admin",
+                 recipient_user_id, current, current),
+            )
         conn.execute(
             "INSERT INTO inbox_notifications"
             "(id,audit_event_id,recipient_kind,recipient_user_id,event_type,created_at) "
@@ -1275,6 +1278,9 @@ class PhysicsPlusApp:
         Resend can use the stable ID as an idempotency key; SMTP has no
         exactly-once guarantee.
         """
+        if email_mode() == "inbox_only":
+            return {"processed": 0, "sent": 0, "retrying": 0, "dead": 0}
+
         limit = max(0, min(int(limit), 25))
         admin_email = admin_email.strip() if isinstance(admin_email, str) else ""
         if admin_email:
@@ -3123,7 +3129,7 @@ class PhysicsPlusApp:
             "SELECT event_type,status,attempts,last_error_code,created_at,next_attempt_at,sent_at "
             "FROM notification_outbox ORDER BY created_at DESC,id DESC LIMIT 10"
         ).fetchall()
-        return {"counts": counts, "failed": [dict(row) for row in failed],
+        return {"mode": email_mode(), "counts": counts, "failed": [dict(row) for row in failed],
                 "recent": [dict(row) for row in recent]}
 
     def _queue_notification_test(self, conn: sqlite3.Connection, actor: sqlite3.Row,
@@ -3135,6 +3141,8 @@ class PhysicsPlusApp:
         """
         if data:
             fail(400, "invalid_input", "This action does not accept any fields")
+        if email_mode() == "inbox_only":
+            fail(503, "email_disabled", "Email delivery is paused; in-app notifications remain active")
         from mailer import delivery_configured
         destination = os.getenv("PH_ADMIN_NOTIFICATION_EMAIL", "")
         try:
@@ -3159,6 +3167,8 @@ class PhysicsPlusApp:
         """Retry retained configuration failures after an admin fixes email setup."""
         if data:
             fail(400, "invalid_input", "This action does not accept any fields")
+        if email_mode() == "inbox_only":
+            fail(503, "email_disabled", "Email delivery is paused; in-app notifications remain active")
         from mailer import delivery_configured
         if not delivery_configured():
             fail(503, "email_unconfigured", "Email delivery is not configured")

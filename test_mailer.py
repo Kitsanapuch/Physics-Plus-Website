@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import app as site
-from mailer import delivery_configured, send_update_email
+from mailer import delivery_configured, email_mode, send_update_email
 
 
 class _Response:
@@ -82,7 +82,7 @@ class MailerTests(unittest.TestCase):
         self.settings = patch.dict(
             os.environ,
             {"RESEND_API_KEY": "re_test_validtoken", "PH_EMAIL_FROM": "updates@example.com",
-             "PH_GMAIL_USER": "", "PH_GMAIL_APP_PASSWORD": ""},
+             "PH_GMAIL_USER": "", "PH_GMAIL_APP_PASSWORD": "", "PH_EMAIL_MODE": "email"},
         )
         self.transport = patch("mailer.http.client.HTTPSConnection", _Connection)
         self.gmail_transport = patch("mailer.smtplib.SMTP_SSL", _SMTP)
@@ -134,6 +134,29 @@ class MailerTests(unittest.TestCase):
             self.assertEqual(send_update_email("student@gmail.com", event_id="x").code, "not_configured")
         self.assertEqual(_Connection.requests, [])
         self.assertEqual(_SMTP.instances, [])
+
+    def test_inbox_only_blocks_all_transports_even_with_valid_provider_config(self):
+        with patch.dict(os.environ, {
+            "PH_EMAIL_MODE": "inbox_only",
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+        }):
+            self.assertEqual(email_mode(), "inbox_only")
+            self.assertFalse(delivery_configured())
+            self.assertEqual(
+                send_update_email("student@gmail.com", event_id="existing-outbox-id").code,
+                "email_disabled",
+            )
+        self.assertEqual(_Connection.requests, [])
+        self.assertEqual(_SMTP.instances, [])
+        self.assertEqual(email_mode(), "email")
+        self.assertTrue(delivery_configured())
+
+    def test_unrecognized_email_mode_fails_closed(self):
+        for value in ("inbox-onyl", ""):
+            with self.subTest(value=value), patch.dict(os.environ, {"PH_EMAIL_MODE": value}):
+                self.assertEqual(email_mode(), "inbox_only")
+                self.assertFalse(delivery_configured())
 
     def test_gmail_takes_priority_and_uses_verified_tls_with_generic_message(self):
         with patch.dict(os.environ, {
@@ -281,6 +304,16 @@ class MailerTests(unittest.TestCase):
         owner.dispatch_outbox.assert_called_once_with(
             site.send_update_email, limit=2, admin_email="owner@gmail.com"
         )
+
+    def test_inbox_only_skips_request_dispatch_even_with_gmail_credentials(self):
+        owner = MagicMock()
+        with patch.dict(os.environ, {
+            "PH_EMAIL_MODE": "inbox_only",
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+        }), patch.object(site, "_backend", return_value=owner):
+            self.assertIsNone(site._dispatch_notifications(limit=2))
+        owner.dispatch_outbox.assert_not_called()
 
 
 if __name__ == "__main__":
