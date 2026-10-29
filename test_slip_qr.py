@@ -7,14 +7,60 @@ import importlib.util
 import io
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
-from backend import PhysicsPlusApp, _emv_qr_checksum_valid, inspect_slip_qr
+from backend import PhysicsPlusApp, _emv_qr_checksum_valid, inspect_slip_qr, valid_payment_image
 
 
 HAS_QR_DECODER = (importlib.util.find_spec("PIL") is not None and
                   importlib.util.find_spec("zxingcpp") is not None)
+HAS_PILLOW = importlib.util.find_spec("PIL") is not None
+
+
+@unittest.skipUnless(HAS_PILLOW, "Pillow is required for payment image validation")
+class PaymentImageValidationTests(unittest.TestCase):
+    @staticmethod
+    def image_bytes(format_name: str, size: tuple[int, int] = (64, 64)) -> bytes:
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("RGB", size, "#e4b946").save(output, format=format_name)
+        return output.getvalue()
+
+    def test_complete_images_of_each_allowed_type_pass(self) -> None:
+        for format_name, mime_type in (("PNG", "image/png"), ("JPEG", "image/jpeg"),
+                                       ("WEBP", "image/webp")):
+            with self.subTest(format_name=format_name):
+                content = self.image_bytes(format_name)
+                self.assertTrue(valid_payment_image(content, mime_type))
+                self.assertFalse(valid_payment_image(content, "image/png" if mime_type != "image/png" else "image/jpeg"))
+
+    def test_header_only_webp_and_truncated_jpeg_are_rejected(self) -> None:
+        # The old structural check accepted this 30-byte RIFF/VP8X header as a
+        # slip even though it contains no image frame to decode.
+        fake_webp = (b"RIFF" + (22).to_bytes(4, "little") + b"WEBPVP8X" +
+                     (10).to_bytes(4, "little") + b"\x00" * 10)
+        self.assertFalse(valid_payment_image(fake_webp, "image/webp"))
+        jpeg = self.image_bytes("JPEG")
+        # Keep the JPEG SOI and EOI markers while removing encoded pixels.
+        self.assertFalse(valid_payment_image(jpeg[:len(jpeg) // 2] + b"\xff\xd9", "image/jpeg"))
+
+    def test_png_with_valid_chunk_crc_but_invalid_pixels_is_rejected(self) -> None:
+        png = bytearray(self.image_bytes("PNG"))
+        marker = png.index(b"IDAT")
+        chunk_start = marker - 4
+        data_start = marker + 4
+        length = int.from_bytes(png[chunk_start:marker], "big")
+        png[data_start] = 0  # corrupt the compressed stream
+        crc_start = data_start + length
+        png[crc_start:crc_start + 4] = zlib.crc32(png[marker:crc_start]).to_bytes(4, "big")
+        self.assertFalse(valid_payment_image(bytes(png), "image/png"))
+
+    def test_pixel_bomb_is_rejected_before_decoding(self) -> None:
+        oversized = self.image_bytes("PNG", (5000, 5000))
+        self.assertFalse(valid_payment_image(oversized, "image/png"))
 
 
 @unittest.skipUnless(HAS_QR_DECODER, "Pillow and zxing-cpp are needed for QR image tests")
