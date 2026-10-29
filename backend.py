@@ -19,7 +19,6 @@ import sqlite3
 import threading
 import time
 import uuid
-import zlib
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -113,78 +112,33 @@ def public_email(row: sqlite3.Row | dict) -> str | None:
 
 
 def valid_payment_image(content: bytes, mime_type: str) -> bool:
-    """Reject truncated, mislabelled, or implausibly large payment images."""
-    if mime_type == "image/png":
-        if not content.startswith(b"\x89PNG\r\n\x1a\n"):
-            return False
-        offset = 8
-        first = True
-        while offset + 12 <= len(content):
-            length = int.from_bytes(content[offset:offset + 4], "big")
-            end = offset + 12 + length
-            if end > len(content):
-                return False
-            kind = content[offset + 4:offset + 8]
-            data = content[offset + 8:offset + 8 + length]
-            expected_crc = int.from_bytes(content[end - 4:end], "big")
-            if zlib.crc32(kind + data) != expected_crc:
-                return False
-            if first:
-                if kind != b"IHDR" or length != 13:
-                    return False
-                width = int.from_bytes(data[:4], "big")
-                height = int.from_bytes(data[4:8], "big")
-                if not (0 < width <= 10000 and 0 < height <= 10000):
-                    return False
-                first = False
-            if kind == b"IEND":
-                return length == 0 and end == len(content)
-            offset = end
+    """Accept only a complete, decodable image of the declared type.
+
+    Pillow's ``verify`` catches broken containers and checksums, while a
+    second open and ``load`` forces pixel decoding (``verify`` alone accepts
+    some truncated JPEG/WebP files). Reject large dimensions before decoding
+    so a tiny compressed upload cannot exhaust the review worker or browser.
+    """
+    expected = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}.get(mime_type)
+    if expected is None or not isinstance(content, bytes) or not 0 < len(content) <= MAX_SLIP_BYTES:
         return False
-    if mime_type == "image/jpeg":
-        if not (content.startswith(b"\xff\xd8\xff") and content.endswith(b"\xff\xd9")):
-            return False
-        offset = 2
-        has_frame = False
-        while offset + 4 <= len(content):
-            if content[offset] != 0xff:
-                return False
-            while offset < len(content) and content[offset] == 0xff:
-                offset += 1
-            if offset + 2 >= len(content):
-                return False
-            marker = content[offset]
-            offset += 1
-            if marker == 0xda:
-                return has_frame and len(content) - offset > 4
-            if marker in (0x01, *range(0xd0, 0xd9)):
-                continue
-            segment_size = int.from_bytes(content[offset:offset + 2], "big")
-            if segment_size < 2 or offset + segment_size > len(content):
-                return False
-            if marker in {0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf}:
-                if segment_size < 7:
-                    return False
-                height = int.from_bytes(content[offset + 3:offset + 5], "big")
-                width = int.from_bytes(content[offset + 5:offset + 7], "big")
-                has_frame = 0 < width <= 10000 and 0 < height <= 10000
-            offset += segment_size
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:
         return False
-    if mime_type == "image/webp":
-        if len(content) < 30 or content[:4] != b"RIFF" or content[8:12] != b"WEBP":
-            return False
-        if int.from_bytes(content[4:8], "little") + 8 != len(content):
-            return False
-        kind = content[12:16]
-        size = int.from_bytes(content[16:20], "little")
-        if kind not in {b"VP8 ", b"VP8L", b"VP8X"} or size < 10 or 20 + size > len(content):
-            return False
-        if kind == b"VP8X":
-            width = int.from_bytes(content[24:27], "little") + 1
-            height = int.from_bytes(content[27:30], "little") + 1
-            return 0 < width <= 10000 and 0 < height <= 10000
+    try:
+        for action in ("verify", "load"):
+            with Image.open(io.BytesIO(content)) as image:
+                if (image.format != expected or image.width < 1 or image.height < 1
+                        or image.width > 10_000 or image.height > 10_000
+                        or image.width * image.height > MAX_QR_IMAGE_PIXELS
+                        or getattr(image, "n_frames", 1) != 1):
+                    return False
+                getattr(image, action)()
         return True
-    return False
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError,
+            Image.DecompressionBombError, MemoryError):
+        return False
 
 
 def _emv_qr_checksum_valid(payload: str) -> bool:
@@ -1245,19 +1199,39 @@ class PhysicsPlusApp:
         )
 
     @staticmethod
-    def _inbox(conn: sqlite3.Connection, user: sqlite3.Row) -> Response:
-        where = "(n.recipient_kind='admin' OR n.recipient_user_id=?)" if user["role"] == "admin" else "n.recipient_user_id=?"
+    def _inbox(conn: sqlite3.Connection, user: sqlite3.Row, query: dict) -> Response:
+        """Return one bounded, stable page of notices for this account."""
+        supplied = query.get("cursor", [])
+        if len(supplied) > 1:
+            fail(400, "invalid_cursor", "Notification cursor is invalid")
+        cursor = supplied[0] if supplied else ""
+        if not isinstance(cursor, str) or len(cursor) > 45:
+            fail(400, "invalid_cursor", "Notification cursor is invalid")
+        scope = "(n.recipient_kind='admin' OR n.recipient_user_id=?)" if user["role"] == "admin" else "n.recipient_user_id=?"
+        where = scope
+        params: list[str | int] = [user["id"]]
+        if cursor:
+            match = re.fullmatch(r"([0-9]{1,12})-([0-9a-f]{32})", cursor)
+            if not match:
+                fail(400, "invalid_cursor", "Notification cursor is invalid")
+            epoch = int(match.group(1))
+            where += " AND (n.created_at<? OR (n.created_at=? AND n.id<?))"
+            params.extend([epoch, epoch, match.group(2)])
         rows = conn.execute(
             "SELECT n.id,n.event_type,n.created_at,n.read_at,a.entity,a.entity_id "
             "FROM inbox_notifications n JOIN audit_events a ON a.id=n.audit_event_id "
-            f"WHERE {where} ORDER BY n.created_at DESC,n.id DESC LIMIT 40",
-            (user["id"],),
+            f"WHERE {where} ORDER BY n.created_at DESC,n.id DESC LIMIT 41",
+            params,
         ).fetchall()
+        page = rows[:40]
+        next_cursor = (f"{page[-1]['created_at']}-{page[-1]['id']}"
+                       if len(rows) > 40 and page else None)
         count = conn.execute(
-            f"SELECT COUNT(*) FROM inbox_notifications n WHERE {where} AND n.read_at IS NULL",
+            f"SELECT COUNT(*) FROM inbox_notifications n WHERE {scope} AND n.read_at IS NULL",
             (user["id"],),
         ).fetchone()[0]
-        return Response(200, {"notifications": [dict(row) for row in rows], "unread_count": count})
+        return Response(200, {"notifications": [dict(row) for row in page],
+                              "unread_count": count, "next_cursor": next_cursor})
 
     def _read_inbox_notice(self, conn: sqlite3.Connection, user: sqlite3.Row, notice_id: str) -> Response:
         where = "(recipient_kind='admin' OR recipient_user_id=?)" if user["role"] == "admin" else "recipient_user_id=?"
@@ -1666,7 +1640,7 @@ class PhysicsPlusApp:
             ).fetchone()[0]
             return Response(200, {"revision": revision})
         if method == "GET" and path == "/api/notifications":
-            return self._inbox(conn, user)
+            return self._inbox(conn, user, query)
         notice_match = re.fullmatch(r"/api/notifications/([0-9a-f]{32})/read", path)
         if method == "POST" and notice_match:
             return self._read_inbox_notice(conn, user, notice_match.group(1))

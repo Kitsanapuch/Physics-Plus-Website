@@ -212,6 +212,20 @@ body .live-dialog.claim-review-dialog{width:min(710px,calc(100vw - 24px));max-he
 .rate-create summary{cursor:pointer;font-weight:600;font-size:12px}
 .live-form-grid .wide-field{grid-column:span 2}
 body .live-dialog{width:min(520px,calc(100vw - 24px));border:1px solid #e1dfd4;border-radius:16px;padding:24px;box-shadow:0 24px 70px #0003}
+body .live-dialog.inbox-dialog[open]{display:flex;flex-direction:column;width:min(560px,calc(100vw - 24px));max-height:min(82vh,760px);max-height:min(82dvh,760px);gap:10px}
+body .live-dialog.inbox-dialog>p{margin:0 0 4px;font-size:12px}
+.inbox-list{display:grid;align-content:start;gap:8px;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:2px 4px 2px 0}
+.inbox-list .inbox-item{display:flex;flex-direction:column;align-items:flex-start;gap:5px;width:100%;padding:12px 14px;border:1px solid #e6dfbd;border-radius:10px;background:#fffdf6;color:#29271d;text-align:left;white-space:normal;line-height:1.5;font-size:12px}
+.inbox-list .inbox-item:hover{background:#fff4cc;border-color:#d9c16a}
+.inbox-list .inbox-item.is-unread{border-color:#d1b748;background:#fff5d4;font-weight:700}
+.inbox-list .inbox-item small{color:#746b4c;font-size:11px;font-weight:400}
+.inbox-pagination{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-top:5px;border-top:1px solid #e9e5d8}
+.inbox-pagination .inbox-load-more{min-height:36px;border-color:#ddc469;background:#fff5c9;color:#2b281d;font-size:11px;font-weight:700}
+.inbox-pagination .inbox-load-more:hover{background:#ffe994}
+.inbox-pagination .inbox-load-more[hidden]{display:none!important}
+.inbox-page-status{margin:0;color:#6f6b5e;font-size:11px;line-height:1.5}
+.inbox-page-status.is-error{color:#9b3927}
+body .live-dialog.inbox-dialog>#inbox-close{align-self:flex-end;font-size:11px}
 body .live-dialog.class-dialog{width:min(680px,calc(100vw - 24px));max-height:calc(100vh - 32px);overflow:auto}
 body .live-dialog::backdrop{background:#151610ab}
 body .live-dialog h2{font-size:19px;margin:0 0 10px}

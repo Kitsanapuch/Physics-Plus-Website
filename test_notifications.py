@@ -136,6 +136,93 @@ class NotificationOutboxTests(unittest.TestCase):
         )
         self.assertEqual(resumed_status.body["mode"], "email")
 
+    def test_inbox_pages_all_notices_with_stable_ties_and_global_unread_count(self) -> None:
+        student_id = self.register_student()
+        student_headers = {"host": "school.example", "cookie": self.student_cookie}
+        with patch.dict(os.environ, {"PH_EMAIL_MODE": "inbox_only"}):
+            with self.owner.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for _ in range(85):
+                    event_id = self.owner.audit(conn, student_id, "assignment", uid(), "update")
+                    self.owner.enqueue_notice(conn, event_id, "task_updated", student_id)
+                # All rows share a timestamp to exercise the id tie-breaker.
+                conn.execute("UPDATE inbox_notifications SET created_at=1700000000")
+                conn.commit()
+
+            seen: list[str] = []
+            cursor = None
+            for expected_size in (40, 40, 5):
+                target = "/api/notifications" + (f"?cursor={cursor}" if cursor else "")
+                response = self.owner.handle("GET", target, None, student_headers, "127.0.0.1")
+                self.assertEqual(response.status, 200, response.body)
+                self.assertEqual(len(response.body["notifications"]), expected_size)
+                self.assertEqual(response.body["unread_count"], 85)
+                seen.extend(row["id"] for row in response.body["notifications"])
+                cursor = response.body["next_cursor"]
+                self.assertEqual(bool(cursor), expected_size == 40)
+            self.assertEqual(len(set(seen)), 85)
+            self.assertEqual(seen, sorted(seen, reverse=True))
+
+            invalid = self.owner.handle(
+                "GET", "/api/notifications?cursor=bad", None,
+                student_headers, "127.0.0.1",
+            )
+            self.assertEqual((invalid.status, invalid.body["error"]["code"]),
+                             (400, "invalid_cursor"))
+            duplicate = self.owner.handle(
+                "GET", "/api/notifications?cursor=1-" + seen[0] + "&cursor=2-" + seen[1],
+                None, student_headers, "127.0.0.1",
+            )
+            self.assertEqual((duplicate.status, duplicate.body["error"]["code"]),
+                             (400, "invalid_cursor"))
+
+    def test_inbox_pagination_preserves_person_scope_and_read_permission(self) -> None:
+        first_id = self.register_student()
+        first_cookie = self.student_cookie
+        second = self.owner.handle(
+            "POST", "/api/auth/register",
+            {"name": "Second", "email": "second@example.com", "password": "SyntheticPassword123!",
+             "grade": "M4", "school": "School", "guardian_name": "Guardian",
+             "guardian_phone": "0812345678", "guardian_relationship": "mother"},
+            self.origin_headers, "127.0.0.3",
+        )
+        self.assertEqual(second.status, 201, second.body)
+        second_cookie = second.headers["Set-Cookie"].split(";", 1)[0]
+        second_id = second.body["user"]["id"]
+        with patch.dict(os.environ, {"PH_EMAIL_MODE": "inbox_only"}):
+            with self.owner.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for student_id in (first_id, second_id):
+                    event_id = self.owner.audit(conn, student_id, "assignment", uid(), "update")
+                    self.owner.enqueue_notice(conn, event_id, "task_updated", student_id)
+                conn.commit()
+            first = self.owner.handle(
+                "GET", "/api/notifications", None,
+                {"host": "school.example", "cookie": first_cookie}, "127.0.0.1",
+            )
+            second_view = self.owner.handle(
+                "GET", "/api/notifications", None,
+                {"host": "school.example", "cookie": second_cookie}, "127.0.0.3",
+            )
+            self.assertEqual(first.status, 200)
+            self.assertEqual(second_view.status, 200)
+            self.assertEqual(len(first.body["notifications"]), 1)
+            self.assertEqual(len(second_view.body["notifications"]), 1)
+            self.assertNotEqual(first.body["notifications"][0]["id"],
+                                second_view.body["notifications"][0]["id"])
+            other_notice_id = second_view.body["notifications"][0]["id"]
+            csrf = self.owner.handle(
+                "GET", "/api/me", None,
+                {"host": "school.example", "cookie": first_cookie}, "127.0.0.1",
+            ).body["csrf_token"]
+            forbidden = self.owner.handle(
+                "POST", f"/api/notifications/{other_notice_id}/read", {},
+                {**self.origin_headers, "cookie": first_cookie, "x-csrf-token": csrf},
+                "127.0.0.1",
+            )
+            self.assertEqual((forbidden.status, forbidden.body["error"]["code"]),
+                             (404, "notification_not_found"))
+
     def test_registration_rejects_addresses_mailing_provider_cannot_send(self) -> None:
         for bad_email in ("student@exam..ple.com", "student@-example.com", "student@exámple.com", "student..name@example.com"):
             with self.subTest(email=bad_email):
