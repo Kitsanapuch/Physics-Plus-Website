@@ -20,6 +20,9 @@ class NotificationOutboxTests(unittest.TestCase):
     def setUp(self) -> None:
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        mode = patch.dict(os.environ, {"PH_EMAIL_MODE": "email"})
+        mode.start()
+        self.addCleanup(mode.stop)
         self.owner = PhysicsPlusApp(Path(temp.name) / "test.sqlite3", "https://school.example")
         self.origin_headers = {"host": "school.example", "origin": "https://school.example"}
 
@@ -44,6 +47,94 @@ class NotificationOutboxTests(unittest.TestCase):
                 "JOIN audit_events a ON a.id=n.audit_event_id"
             ).fetchone()
         self.assertEqual(tuple(row), ("student_registered", "admin", None, "pending", "user", "register"))
+
+    def test_inbox_only_preserves_existing_email_rows_and_personal_notifications(self) -> None:
+        student_id = self.register_student()
+        self.owner.bootstrap_admin(None, "Admin", "SyntheticPassword123!", "physicsplus")
+        login = self.owner.handle(
+            "POST", "/api/auth/login",
+            {"login": "physicsplus", "password": "SyntheticPassword123!"},
+            self.origin_headers, "127.0.0.2",
+        )
+        self.assertEqual(login.status, 200, login.body)
+        admin_headers = {
+            **self.origin_headers,
+            "cookie": login.headers["Set-Cookie"].split(";", 1)[0],
+            "x-csrf-token": login.body["csrf_token"],
+        }
+        with self.owner.connect() as conn:
+            old_row = conn.execute(
+                "SELECT id,status,attempts,next_attempt_at FROM notification_outbox"
+            ).fetchone()
+            old_state = tuple(old_row)
+
+        with patch.dict(os.environ, {
+            "PH_EMAIL_MODE": "inbox_only",
+            "PH_GMAIL_USER": "physicsplus.test@gmail.com",
+            "PH_GMAIL_APP_PASSWORD": "abcdefghijklmnop",
+        }):
+            with self.owner.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                event_id = self.owner.audit(conn, student_id, "invoice", uid(), "create")
+                self.owner.enqueue_notice(conn, event_id, "invoice_created", student_id)
+                conn.commit()
+                self.assertIsNone(conn.execute(
+                    "SELECT id FROM notification_outbox WHERE audit_event_id=?", (event_id,)
+                ).fetchone())
+                self.assertEqual(conn.execute(
+                    "SELECT COUNT(*) FROM inbox_notifications WHERE audit_event_id=? AND recipient_user_id=?",
+                    (event_id, student_id),
+                ).fetchone()[0], 1)
+
+            inbox = self.owner.handle(
+                "GET", "/api/notifications", None,
+                {"host": "school.example", "cookie": self.student_cookie}, "127.0.0.1",
+            )
+            self.assertEqual(inbox.status, 200, inbox.body)
+            self.assertTrue(any(row["event_type"] == "invoice_created"
+                                for row in inbox.body["notifications"]))
+            status = self.owner.handle(
+                "GET", "/api/admin/notification-status", None,
+                admin_headers, "127.0.0.2",
+            )
+            self.assertEqual(status.status, 200, status.body)
+            self.assertEqual(status.body["mode"], "inbox_only")
+            self.assertEqual(status.body["counts"]["pending"], 1)
+            compact = self.owner.handle(
+                "GET", "/api/admin/dashboard?compact=1", None,
+                admin_headers, "127.0.0.2",
+            )
+            self.assertEqual(compact.status, 200, compact.body)
+            self.assertEqual(compact.body["notifications"]["mode"], "inbox_only")
+            for endpoint in ("notification-test", "notification-retry"):
+                denied = self.owner.handle(
+                    "POST", f"/api/admin/{endpoint}", {}, admin_headers, "127.0.0.2",
+                )
+                self.assertEqual((denied.status, denied.body["error"]["code"]),
+                                 (503, "email_disabled"))
+            sent_to = []
+            outcome = self.owner.dispatch_outbox(
+                lambda address, *, event_id: sent_to.append(address) or MailResult(True, "accepted"),
+                limit=2, admin_email="admin@example.com",
+            )
+            self.assertEqual(outcome, {"processed": 0, "sent": 0, "retrying": 0, "dead": 0})
+            self.assertEqual(sent_to, [])
+
+        with self.owner.connect() as conn:
+            preserved = conn.execute(
+                "SELECT id,status,attempts,next_attempt_at FROM notification_outbox WHERE id=?",
+                (old_row["id"],),
+            ).fetchone()
+            self.assertEqual(tuple(preserved), old_state)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM notification_outbox").fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM audit_events WHERE entity IN ('email_test','email_delivery')"
+            ).fetchone()[0], 0)
+
+        resumed_status = self.owner.handle(
+            "GET", "/api/admin/notification-status", None, admin_headers, "127.0.0.2",
+        )
+        self.assertEqual(resumed_status.body["mode"], "email")
 
     def test_registration_rejects_addresses_mailing_provider_cannot_send(self) -> None:
         for bad_email in ("student@exam..ple.com", "student@-example.com", "student@exámple.com", "student..name@example.com"):

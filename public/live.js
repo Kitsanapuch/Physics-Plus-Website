@@ -2083,19 +2083,31 @@
   }
 
   function renderAdminEmailStatus(notifications = {}) {
+    const inboxOnly = notifications.mode === 'inbox_only';
     const counts = notifications.counts || {};
     const countLine = $('admin-email-counts');
-    if (countLine) countLine.textContent = `รอส่ง ${Number(counts.pending || 0) + Number(counts.sending || 0)} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
+    const pending = Number(counts.pending || 0) + Number(counts.sending || 0);
+    if (countLine) countLine.textContent = inboxOnly
+      ? `คิวอีเมลเดิมพักไว้ ${pending} · เคยส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`
+      : `รอส่ง ${pending} · ส่งแล้ว ${Number(counts.sent) || 0} · ส่งไม่สำเร็จ ${Number(counts.dead) || 0}`;
+    const title = $('admin-notification-title');
+    if (title) title.textContent = inboxOnly ? 'การแจ้งเตือนของร้าน' : 'สถานะอีเมลแจ้งเตือน';
+    const modeBanner = $('admin-inbox-only-banner');
+    if (modeBanner) modeBanner.hidden = !inboxOnly;
+    const actions = $('admin-email-actions');
+    if (actions) actions.hidden = inboxOnly;
+    const feedback = $('email-test-status');
+    if (feedback) feedback.hidden = inboxOnly || !state.emailTestStatus;
     const recent = Array.isArray(notifications.recent) ? notifications.recent : [];
     const configIssue = recent.some((item) => item.status === 'pending' &&
       ['not_configured', 'invalid_configuration', 'invalid_gmail_sender',
         'invalid_app_password_format', 'gmail_auth_rejected', 'smtp_tls_failure'].includes(item.last_error_code));
     const warning = $('admin-email-warning');
-    if (warning) warning.hidden = !configIssue;
+    if (warning) warning.hidden = inboxOnly || !configIssue;
     const recentHost = $('admin-email-recent');
     if (recentHost) {
       recentHost.replaceChildren();
-      recentHost.append(element('h3', '', 'รายการส่งล่าสุด'));
+      recentHost.append(element('h3', '', inboxOnly ? 'ประวัติอีเมลเดิม' : 'รายการส่งล่าสุด'));
       if (!recent.length) recentHost.append(element('p', 'muted', 'ยังไม่มีรายการอีเมลแจ้งเตือน'));
       else {
         const statusLabels = { pending: 'รอส่ง', sending: 'กำลังส่ง', sent: 'ส่งแล้ว', dead: 'ส่งไม่สำเร็จ' };
@@ -2118,12 +2130,15 @@
         head.append(headRow);
         const body = element('tbody');
         for (const notice of recent) {
+          const paused = inboxOnly && (notice.status === 'pending' || notice.status === 'sending');
           const row = element('tr');
           cell(row, thaiDateTime(notice.created_at));
           cell(row, notice.event_type === 'email_test' ? 'อีเมลทดสอบ' : noticeLabels[notice.event_type] || notice.event_type || 'ข้อมูลอัปเดต');
-          cell(row, statusLabels[notice.status] || 'ไม่ทราบสถานะ');
+          cell(row, paused ? 'พักส่ง' : statusLabels[notice.status] || 'ไม่ทราบสถานะ');
           cell(row, String(notice.attempts ?? 0));
-          const detail = notice.last_error_code
+          const detail = paused
+            ? `พักการส่งไว้${notice.last_error_code ? ` · ก่อนพัก: ${errorLabels[notice.last_error_code] || notice.last_error_code}` : ''}`
+            : notice.last_error_code
             ? errorLabels[notice.last_error_code] || notice.last_error_code
             : notice.status === 'pending' && notice.next_attempt_at
               ? `กำหนดส่ง ${thaiDateTime(notice.next_attempt_at)}` : '—';
@@ -2182,6 +2197,7 @@
     const users = state.data.users || [];
     const notifications = state.data.notifications || {};
     const notificationCounts = notifications.counts || {};
+    const inboxOnly = notifications.mode === 'inbox_only';
     const teachers = users.filter((person) => person.role === 'teacher');
     const staffBody = $('admin-staff-rows');
     $('staff-total').textContent = `ครูทั้งหมด ${teachers.length} คน`;
@@ -2256,7 +2272,9 @@
       queueItem(overview ? overview.pending_claims : claims.length, 'รอตรวจการชำระ', 'ตรวจเงินและเลขอ้างอิงก่อนกดยืนยัน', 'admin-claims', true),
       queueItem(overview ? overview.pending_times : times.length, 'รอตรวจเวลาสอน', 'เช็กชื่อและตรวจอัตราก่อนอนุมัติ', 'admin-teaching', true),
       queueItem(overview ? overview.overdue_count : overdue.length, 'ใบแจ้งยอดเลยกำหนด', 'ยังมียอดคงเหลือที่ต้องติดตาม', 'admin-invoices', true),
-      queueItem(overview ? overview.failed_notices : Number(notificationCounts.dead) || 0, 'อีเมลส่งไม่สำเร็จ', 'ตรวจสถานะการแจ้งเตือน', 'admin-notifications', true)
+      queueItem(overview ? overview.failed_notices : Number(notificationCounts.dead) || 0,
+        inboxOnly ? 'ประวัติอีเมลส่งไม่สำเร็จ' : 'อีเมลส่งไม่สำเร็จ',
+        inboxOnly ? 'เปิดดูรายการที่เกิดก่อนพักส่งอีเมล' : 'ตรวจสถานะการแจ้งเตือน', 'admin-notifications', true)
     );
     queue.append(queueGrid);
     $('admin-overview-ops').append(queue);
@@ -2265,16 +2283,28 @@
       ['รอตรวจการชำระ', overview ? overview.pending_claims : claims.length],
       ['รอตรวจเวลาสอน', overview ? overview.pending_times : times.length],
       ['ใบแจ้งยอดเลยกำหนด', overview ? overview.overdue_count : overdue.length],
-      ['อีเมลส่งไม่สำเร็จ', overview ? overview.failed_notices : Number(notificationCounts.dead) || 0]
+      [inboxOnly ? 'ประวัติอีเมลส่งไม่สำเร็จ' : 'อีเมลส่งไม่สำเร็จ',
+        overview ? overview.failed_notices : Number(notificationCounts.dead) || 0]
     ]);
     $('admin-overview-ops').append(workload);
     const notificationPanel = element('section', 'panel');
     notificationPanel.id = 'admin-notifications';
-    notificationPanel.append(element('h2', '', 'สถานะอีเมลแจ้งเตือน'));
+    const notificationTitle = element('h2', '', 'สถานะอีเมลแจ้งเตือน');
+    notificationTitle.id = 'admin-notification-title';
+    notificationPanel.append(notificationTitle);
+    const inboxOnlyBanner = element('div', 'inbox-only-banner');
+    inboxOnlyBanner.id = 'admin-inbox-only-banner';
+    inboxOnlyBanner.hidden = true;
+    const inboxOnlyCopy = element('div');
+    inboxOnlyCopy.append(element('strong', '', 'แจ้งเตือนในระบบเปิดใช้งาน'));
+    inboxOnlyCopy.append(element('p', '', 'นักเรียน ครู และผู้ดูแลยังได้รับข้อความในบัญชีของตน อีเมลถูกพักส่งไว้จนกว่าจะตั้งค่าผู้ส่งสำเร็จ'));
+    inboxOnlyBanner.append(inboxOnlyCopy, actionButton('ดูข้อความ', 'open-inbox'));
+    notificationPanel.append(inboxOnlyBanner);
     const deliveryCounts = element('p', 'muted');
     deliveryCounts.id = 'admin-email-counts';
     notificationPanel.append(deliveryCounts);
     const testActions = element('div', 'email-test-actions');
+    testActions.id = 'admin-email-actions';
     testActions.append(actionButton('ส่งอีเมลทดสอบ', 'send-test-email'));
     testActions.append(actionButton('ส่งคิวที่ค้างอีกครั้ง', 'retry-email-delivery'));
     testActions.append(element('span', 'muted', 'ส่งไปยังอีเมลผู้ดูแลที่ตั้งค่าไว้ เพื่อทดสอบการส่งจริง'));
@@ -2676,7 +2706,7 @@
       return;
     }
     if (action === 'send-test-email') {
-      if (state.me?.role !== 'admin') return;
+      if (state.me?.role !== 'admin' || state.data?.notifications?.mode === 'inbox_only') return;
       await task(button, async () => {
         setAdminEmailFeedback('กำลังส่งคำขอทดสอบ…');
         try {
@@ -2684,7 +2714,9 @@
           setAdminEmailFeedback('เพิ่มอีเมลทดสอบเข้าคิวแล้ว กรุณาตรวจสถานะส่งจริงในรายการอีเมลแจ้งเตือน');
           scheduleAdminEmailRefresh();
         } catch (error) {
-          setAdminEmailFeedback(error.code === 'email_unconfigured'
+          setAdminEmailFeedback(error.code === 'email_disabled'
+            ? 'อีเมลถูกพักส่งอยู่ การแจ้งเตือนในระบบยังใช้งานได้'
+            : error.code === 'email_unconfigured'
             ? 'ยังไม่ได้ตั้งค่าการส่งอีเมล กรุณาตรวจการตั้งค่าในระบบ'
             : 'ส่งคำขอทดสอบไม่สำเร็จ กรุณาลองใหม่หรือตรวจการตั้งค่าอีเมล', true);
         }
@@ -2693,7 +2725,7 @@
       return;
     }
     if (action === 'retry-email-delivery') {
-      if (state.me?.role !== 'admin') return;
+      if (state.me?.role !== 'admin' || state.data?.notifications?.mode === 'inbox_only') return;
       await task(button, async () => {
         setAdminEmailFeedback('กำลังส่งคิวอีเมลที่ค้างอีกครั้ง…');
         try {
@@ -2707,7 +2739,9 @@
           renderAdminEmailStatus(updated);
           if (queued) scheduleAdminEmailRefresh();
         } catch (error) {
-          setAdminEmailFeedback(error.code === 'email_unconfigured'
+          setAdminEmailFeedback(error.code === 'email_disabled'
+            ? 'อีเมลถูกพักส่งอยู่ การแจ้งเตือนในระบบยังใช้งานได้'
+            : error.code === 'email_unconfigured'
             ? 'ยังไม่ได้ตั้งค่าการส่งอีเมล กรุณาตรวจการตั้งค่าในระบบ'
             : error.code === 'rate_limited'
               ? 'กรุณารออย่างน้อยหนึ่งนาทีก่อนสั่งส่งคิวอีกครั้ง'

@@ -115,6 +115,12 @@ body .live-dialog.claim-review-dialog{width:min(710px,calc(100vw - 24px));max-he
 .sheet-sync-actions a,.sheet-sync-actions button{display:inline-flex;align-items:center;justify-content:center;min-height:35px;padding:8px 11px;border:1px solid #dfd8bb;border-radius:8px;background:#fff;color:#302d22;font-size:11px;font-weight:700;text-decoration:none}
 .sheet-sync-actions a:hover,.sheet-sync-actions button:hover{background:#fff2b9}
 .email-test-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0 10px}
+.email-test-actions[hidden],.inbox-only-banner[hidden]{display:none}
+.inbox-only-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin:13px 0;padding:14px 16px;border:1px solid #bbdcb6;border-radius:11px;background:#f2faee;color:#294f32}
+.inbox-only-banner strong{display:block;font-size:13px}
+.inbox-only-banner p{margin:4px 0 0;font-size:12px;line-height:1.6}
+.inbox-only-banner button{flex:none;min-height:34px;border:1px solid #a1c29a;border-radius:8px;background:#fff;color:#294f32;font-size:11px;font-weight:700}
+.inbox-only-banner button:hover,.inbox-only-banner button:focus-visible{background:#e6f5df}
 .email-test-actions button{min-height:35px;padding:8px 12px;border:1px solid #e3ca62;border-radius:8px;background:#ffeb91;color:#29251b;font-size:11px;font-weight:700}
 .email-test-actions button:hover,.email-test-actions button:focus-visible{background:#ffdc64}
 .email-test-actions button[data-action="retry-email-delivery"]{border-color:#d9d0ae;background:#fffdf4}
@@ -127,6 +133,7 @@ body .live-dialog.claim-review-dialog{width:min(710px,calc(100vw - 24px));max-he
 .email-delivery-table td{white-space:normal;min-width:94px;line-height:1.5}
 .email-delivery-table td:nth-child(2),.email-delivery-table td:last-child{min-width:150px}
 .email-delivery-failed{margin-top:16px}
+@media(max-width:480px){.inbox-only-banner{align-items:stretch}.inbox-only-banner button{width:100%}}
 .individual-billing-panel{border-color:#e1d29c;background:linear-gradient(145deg,#fffef8,#fff9df 55%,#fff)}
 .individual-billing-panel .panel-head{margin-bottom:16px}
 .individual-billing-controls{display:flex;align-items:end;gap:10px;flex-wrap:wrap}
