@@ -91,10 +91,17 @@ def _retry_after(value: str | None) -> int | None:
     return min(int(value), 3600)
 
 
+def email_mode() -> str:
+    """Return the active delivery mode; unknown values fail closed to inbox only."""
+
+    configured = os.getenv("PH_EMAIL_MODE")
+    return "email" if configured is None or configured.strip().lower() == "email" else "inbox_only"
+
+
 def delivery_configured() -> bool:
     """Return whether a complete server-side provider pair is present."""
 
-    return bool(
+    return email_mode() == "email" and bool(
         (os.getenv("PH_GMAIL_USER") and os.getenv("PH_GMAIL_APP_PASSWORD"))
         or (os.getenv("RESEND_API_KEY") and os.getenv("PH_EMAIL_FROM"))
     )
@@ -168,6 +175,9 @@ def send_update_email(recipient_email: str, *, event_id: str,
     It must be called after committing the business transaction; email
     failure must not undo the saved update.
     """
+
+    if email_mode() == "inbox_only":
+        return MailResult(False, "email_disabled")
 
     recipient = _email_address(recipient_email)
     if recipient is None:
