@@ -17,13 +17,16 @@
     pending_confirmation: 'รอยืนยันอัตรา', active: 'กำลังเรียน'
   };
   const $ = (id) => document.getElementById(id);
-  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], loadingClasses: false, availability: [], tasks: [], inbox: { notifications: [], unread_count: 0 }, revision: null, paymentAccount: null, paymentInvoiceId: '', sheetSyncStatus: null, emailTestStatus: '', emailTestFailed: false, individualBilling: null, individualBillingPeriod: '', individualBillingBusy: false, individualBillingError: '', peopleSearch: { query: '', role: 'all', rows: [], hasMore: false, loading: false, error: '', searched: false }, nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '', loadingDetails: false, refreshBusy: false };
+  const state = { me: null, csrf: '', data: null, courses: [], academic: null, classes: [], loadingClasses: false, availability: [], tasks: [], inbox: { notifications: [], unread_count: 0, next_cursor: null }, revision: null, paymentAccount: null, paymentInvoiceId: '', sheetSyncStatus: null, emailTestStatus: '', emailTestFailed: false, individualBilling: null, individualBillingPeriod: '', individualBillingBusy: false, individualBillingError: '', peopleSearch: { query: '', role: 'all', rows: [], hasMore: false, loading: false, error: '', searched: false }, nav: [], viewId: '', viewTargetId: '', homeHeading: '', homeSubtitle: '', loadingDetails: false, refreshBusy: false };
   let activeTasks = 0;
   let individualBillingRequest = 0;
   let adminClaimIds = null;
   let adminClaimPollBusy = false;
   let inboxPollBusy = false;
   let inboxInitialized = false;
+  let inboxExpanded = false;
+  let inboxMoreBusy = false;
+  let inboxMoreError = '';
   let syncPollBusy = false;
   let loadGeneration = 0;
   let sheetStatusRefreshTimer = 0;
@@ -162,6 +165,24 @@
       adminClaimPollBusy = false;
     }
   }
+  function mergeInboxNotices(...pages) {
+    const seen = new Set();
+    return pages.flat().filter((notice) => {
+      const id = String(notice.id);
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+  function updateInboxBadge() {
+    const badge = $('inbox-badge');
+    const button = $('inbox-button');
+    if (!badge || !button) return;
+    const count = Number(state.inbox.unread_count || 0);
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.hidden = count === 0;
+    button.setAttribute('aria-label', `การแจ้งเตือนของฉัน ${count} รายการที่ยังไม่อ่าน`);
+  }
   async function pollInbox({ announce = false } = {}) {
     if (!state.me || document.hidden || inboxPollBusy) return;
     inboxPollBusy = true;
@@ -169,16 +190,18 @@
       const hadLoadedInbox = inboxInitialized;
       const previous = new Set((state.inbox.notifications || []).map((item) => item.id));
       const loaded = await api('/api/notifications');
-      state.inbox = loaded;
+      const older = state.inbox.notifications || [];
+      const nextCursor = state.inbox.next_cursor;
+      state.inbox = {
+        ...loaded,
+        notifications: inboxExpanded
+          ? mergeInboxNotices(loaded.notifications || [], older)
+          : loaded.notifications || [],
+        next_cursor: inboxExpanded ? nextCursor : loaded.next_cursor || null
+      };
       inboxInitialized = true;
-      const badge = $('inbox-badge');
-      const button = $('inbox-button');
-      if (badge && button) {
-        const count = Number(loaded.unread_count || 0);
-        badge.textContent = count > 99 ? '99+' : String(count);
-        badge.hidden = count === 0;
-        button.setAttribute('aria-label', `การแจ้งเตือนของฉัน ${count} รายการที่ยังไม่อ่าน`);
-      }
+      updateInboxBadge();
+      if ($('live-dialog')?.open && $('live-dialog').classList.contains('inbox-dialog')) renderInboxContents();
       if (announce && hadLoadedInbox && (loaded.notifications || []).some((item) => !item.read_at && !previous.has(item.id))) {
         const toast = $('inbox-toast');
         if (toast) { toast.textContent = 'มีการแจ้งเตือนใหม่ในบัญชีของคุณ'; toast.hidden = false;
@@ -224,6 +247,64 @@
       return state.me.role === 'teacher' ? 'teacher-payroll' : state.me.role === 'admin' ? 'admin-payroll' : 'overview';
     return 'overview';
   }
+  function renderInboxContents() {
+    const list = $('inbox-list');
+    if (!list) return;
+    const scrollTop = list.scrollTop;
+    const focusedId = document.activeElement?.dataset.action === 'read-inbox'
+      ? document.activeElement.dataset.id : null;
+    list.replaceChildren();
+    const notices = state.inbox.notifications || [];
+    if (!notices.length) list.append(element('p', 'muted', 'ยังไม่มีการแจ้งเตือน'));
+    for (const notice of notices) {
+      const item = actionButton(noticeLabels[notice.event_type] || 'ข้อมูลในระบบมีการอัปเดต', 'read-inbox', notice.id,
+        `inbox-item${notice.read_at ? '' : ' is-unread'}`);
+      item.dataset.target = noticeTarget(notice);
+      item.append(element('small', '', thaiDateTime(notice.created_at)));
+      list.append(item);
+    }
+    list.scrollTop = scrollTop;
+    if (focusedId) {
+      const focused = Array.from(list.querySelectorAll('button[data-id]'))
+        .find((item) => item.dataset.id === focusedId);
+      focused?.focus({ preventScroll: true });
+    }
+    const more = $('inbox-load-more');
+    if (more) {
+      more.hidden = !state.inbox.next_cursor;
+      more.disabled = inboxMoreBusy;
+      more.textContent = inboxMoreBusy ? 'กำลังโหลดรายการก่อนหน้า…'
+        : inboxMoreError ? 'ลองโหลดรายการก่อนหน้าอีกครั้ง' : 'ดูรายการก่อนหน้า';
+      more.setAttribute('aria-busy', String(inboxMoreBusy));
+    }
+    const status = $('inbox-page-status');
+    if (status) {
+      status.textContent = inboxMoreError || (inboxMoreBusy ? 'กำลังโหลดรายการก่อนหน้า…'
+        : `แสดง ${notices.length.toLocaleString('th-TH')} รายการ${state.inbox.next_cursor ? ' · ยังมีรายการก่อนหน้า' : ''}`);
+      status.classList.toggle('is-error', Boolean(inboxMoreError));
+    }
+  }
+  async function loadMoreInbox() {
+    const cursor = state.inbox.next_cursor;
+    if (!state.me || !cursor || inboxMoreBusy) return;
+    inboxMoreBusy = true;
+    inboxExpanded = true;
+    inboxMoreError = '';
+    renderInboxContents();
+    try {
+      const page = await api(`/api/notifications?cursor=${encodeURIComponent(cursor)}`);
+      state.inbox.notifications = mergeInboxNotices(state.inbox.notifications || [], page.notifications || []);
+      state.inbox.next_cursor = page.next_cursor || null;
+      state.inbox.unread_count = page.unread_count;
+      updateInboxBadge();
+    } catch (_error) {
+      inboxMoreError = 'โหลดรายการก่อนหน้าไม่สำเร็จ กรุณาลองอีกครั้ง';
+    } finally {
+      inboxMoreBusy = false;
+      renderInboxContents();
+      if (!state.inbox.next_cursor && $('live-dialog')?.open) $('inbox-close')?.focus({ preventScroll: true });
+    }
+  }
   function showInbox() {
     const dialog = $('live-dialog');
     dialog.replaceChildren();
@@ -234,18 +315,28 @@
     dialog.append(heading,
       element('p', 'muted', 'รายการนี้แสดงเฉพาะบัญชีที่เกี่ยวข้องกับการเปลี่ยนแปลง'));
     const list = element('div', 'inbox-list');
-    const notices = state.inbox.notifications || [];
-    if (!notices.length) list.append(element('p', 'muted', 'ยังไม่มีการแจ้งเตือน'));
-    for (const notice of notices) {
-      const item = actionButton(noticeLabels[notice.event_type] || 'ข้อมูลในระบบมีการอัปเดต', 'read-inbox', notice.id,
-        `inbox-item${notice.read_at ? '' : ' is-unread'}`);
-      item.dataset.target = noticeTarget(notice);
-      item.append(element('small', '', thaiDateTime(notice.created_at)));
-      list.append(item);
-    }
+    list.id = 'inbox-list';
     dialog.append(list);
-    const close = actionButton('ปิด', 'close-inbox', '', 'primary'); dialog.append(close);
-    dialog.onclose = () => { dialog.removeAttribute('aria-labelledby'); dialog.classList.remove('inbox-dialog'); dialog.replaceChildren(); };
+    const pagination = element('div', 'inbox-pagination');
+    const more = actionButton('ดูรายการก่อนหน้า', 'load-more-inbox', '', 'inbox-load-more');
+    more.id = 'inbox-load-more';
+    more.setAttribute('aria-controls', list.id);
+    const pageStatus = element('p', 'inbox-page-status');
+    pageStatus.id = 'inbox-page-status';
+    pageStatus.setAttribute('role', 'status');
+    pageStatus.setAttribute('aria-live', 'polite');
+    pagination.append(more, pageStatus);
+    dialog.append(pagination);
+    const close = actionButton('ปิด', 'close-inbox', '', 'primary');
+    close.id = 'inbox-close';
+    dialog.append(close);
+    dialog.onclose = () => {
+      inboxMoreError = '';
+      dialog.removeAttribute('aria-labelledby');
+      dialog.classList.remove('inbox-dialog');
+      dialog.replaceChildren();
+    };
+    renderInboxContents();
     dialog.showModal();
   }
   let studentClassPollBusy = false;
@@ -2640,9 +2731,12 @@
       return;
     }
     if (action === 'close-inbox') { $('live-dialog').close(); return; }
+    if (action === 'load-more-inbox') { await loadMoreInbox(); return; }
     if (action === 'read-inbox') {
       await task(button, async () => {
         await api(`/api/notifications/${validId(button.dataset.id)}/read`, 'POST', {});
+        const notice = (state.inbox.notifications || []).find((item) => item.id === button.dataset.id);
+        if (notice) notice.read_at = notice.read_at || true;
         const target = button.dataset.target || 'overview';
         $('live-dialog').close();
         await pollInbox();
