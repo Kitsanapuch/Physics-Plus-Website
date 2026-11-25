@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#10110f">
+  <meta name="theme-color" content="#06090d">
   <title>Physics Plus | เรียนพิเศษ ม.ต้น–ม.ปลาย</title>
   <meta name="description" content="Physics Plus ร้านสอนพิเศษสำหรับนักเรียนมัธยม ม.ต้นเรียนวิทยาศาสตร์ คณิตศาสตร์ และภาษาอังกฤษ ม.ปลายเรียนฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และภาษาอังกฤษ">
   <link rel="canonical" href="https://physicsplus.vercel.app/">
@@ -18,11 +18,12 @@
   <link rel="icon" href="physics-plus-favicon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="portal.css?v=21">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&amp;family=Outfit:wght@400;500;600;700&amp;display=swap" media="print" onload="this.media='all'">
+  <link rel="stylesheet" href="portal.css?v=23">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@400;500;600;700&amp;family=Outfit:wght@400;500;600;700&amp;family=Bruno+Ace+SC&amp;display=swap" media="print" onload="this.media='all'">
 </head>
 <body>
-  <div class="ambient" aria-hidden="true"><span>E = mc²</span><span>F = ma</span><span>∫ x dx</span></div>
+  <div class="page-progress" aria-hidden="true"></div>
+  <div class="ambient" aria-hidden="true"><span>E = mc²</span><span>F = ma</span><span>∫ x dx</span><i class="sky-streak sky-streak-one"></i><i class="sky-streak sky-streak-two"></i></div>
   <header class="topbar">
     <a class="brand" href="index.html" aria-label="Physics Plus หน้าแรก"><img src="physics-plus-logo-yellow-black.jpg" alt="โลโก้ Physics Plus" width="42" height="42" decoding="async"><span>Physics Plus<span class="brand-dot">.</span></span></a>
     <nav aria-label="เมนูหลัก"><span class="nav-current">พื้นที่การเรียนรู้</span><button id="about-button" type="button">เกี่ยวกับเรา</button></nav>
@@ -30,8 +31,10 @@
   <main class="portal-layout">
     <section class="story" aria-labelledby="hero-title">
       <div class="story-top"><span class="mini-line"></span><span>PHYSICS PLUS · LEARNING SPACE</span></div>
-      <h1 id="hero-title">เรียนให้เข้าใจ<br><span>ไปได้ไกลกว่าเดิม<span class="dot">.</span></span></h1>
-      <p>Physics Plus สอนพิเศษระดับมัธยม: ม.ต้นเรียนวิทยาศาสตร์ คณิตศาสตร์ และภาษาอังกฤษ; ม.ปลายเรียนฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ และภาษาอังกฤษ</p>
+      <div class="cosmic-mark" aria-hidden="true"><svg viewBox="0 0 320 108" focusable="false"><path class="comet-star" d="m78 9 11.8 31.9H124L96.3 61l10.5 32.9L78 74.1 49.2 93.9 59.7 61 32 40.9h34.2Z"/><path class="comet-tail-main" d="M106 40.7 315 4 147 52.5l-35.8-.4Z"/><path class="comet-tail-accent" d="M119 57.6 270 24 167 65.5l-42.5-.9Z"/></svg></div>
+      <h1 id="hero-title" class="cosmic-title" aria-label="Physics Plus"><span class="title-physics">PHYSICS<i class="letter-cut letter-cut-one" aria-hidden="true"></i><i class="letter-cut letter-cut-two" aria-hidden="true"></i><i class="letter-cut letter-cut-three" aria-hidden="true"></i></span><span class="title-plus">PLUS<span class="title-spark" aria-hidden="true">✦</span></span></h1>
+      <p class="story-tagline">เรียนให้เข้าใจ ไปได้ไกลกว่าเดิม</p>
+      <p class="story-description">สอนพิเศษระดับมัธยม ม.ต้น: วิทยาศาสตร์ คณิตศาสตร์ ภาษาอังกฤษ · ม.ปลาย: ฟิสิกส์ เคมี ชีวะ คณิตศาสตร์ ภาษาอังกฤษ</p>
       <div class="subjects" role="group" aria-label="สำรวจกลุ่มวิชาที่สอน"><button type="button" class="active" data-subject="physics" aria-pressed="true">ฟิสิกส์</button><button type="button" data-subject="chemistry" aria-pressed="false">เคมี</button><button type="button" data-subject="biology" aria-pressed="false">ชีวะ</button><button type="button" data-subject="math" aria-pressed="false">คณิตศาสตร์</button><button type="button" data-subject="general" aria-pressed="false">ภาษาอังกฤษ</button></div>
       <div class="subject-display" aria-live="polite">
         <div class="subject-display-copy"><span class="subject-kicker">สำรวจวิชาของเรา <span class="subject-number" id="subject-number">01 / 05</span></span><h2 id="subject-title">ฟิสิกส์</h2><p id="subject-description">เข้าใจแรง การเคลื่อนที่ และพลังงานผ่านโจทย์ที่เห็นภาพ</p></div>
@@ -76,6 +79,23 @@ d.querySelectorAll('[data-subject]').forEach(button=>button.addEventListener('cl
 const motionButton=d.getElementById('motion-control');let motionPaused=false;
 function setMotionPaused(paused){motionPaused=paused;d.documentElement.classList.toggle('motion-paused',paused);if(paused){cancelAnimationFrame(subjectAnimationFrame);cancelAnimationFrame(waveAnimationFrame);d.querySelector('.auth-card').classList.remove('auth-switch','auth-pulse')}motionButton.setAttribute('aria-pressed',String(paused));motionButton.setAttribute('aria-label',paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว');motionButton.querySelector('.motion-icon').textContent=paused?'▶':'Ⅱ';motionButton.querySelector('.motion-label').textContent=paused?'เริ่มภาพเคลื่อนไหว':'หยุดภาพเคลื่อนไหว'}
 motionButton.addEventListener('click',()=>setMotionPaused(!motionPaused));
+const authCard=d.querySelector('.auth-card');
+if(matchMedia('(hover: hover) and (pointer: fine)').matches){
+  let pointerFrame=0,pointerX=50,pointerY=50;
+  authCard.addEventListener('pointermove',event=>{
+    if(motionPaused||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const bounds=authCard.getBoundingClientRect();
+    pointerX=Math.max(0,Math.min(100,((event.clientX-bounds.left)/bounds.width)*100));
+    pointerY=Math.max(0,Math.min(100,((event.clientY-bounds.top)/bounds.height)*100));
+    if(pointerFrame)return;
+    pointerFrame=requestAnimationFrame(()=>{pointerFrame=0;authCard.style.setProperty('--pointer-x',pointerX+'%');authCard.style.setProperty('--pointer-y',pointerY+'%')});
+  },{passive:true});
+  authCard.addEventListener('pointerleave',()=>{cancelAnimationFrame(pointerFrame);pointerFrame=0;authCard.style.removeProperty('--pointer-x');authCard.style.removeProperty('--pointer-y')});
+}
+const progressBar=d.querySelector('.page-progress');let progressFrame=0;
+function updatePageProgress(){progressFrame=0;const available=d.documentElement.scrollHeight-innerHeight;progressBar.style.transform='scaleX('+(available>0?Math.max(0,Math.min(1,scrollY/available)):0)+')'}
+addEventListener('scroll',()=>{if(!progressFrame)progressFrame=requestAnimationFrame(updatePageProgress)},{passive:true});
+addEventListener('resize',updatePageProgress,{passive:true});updatePageProgress();
 function registerMode(){return tabs[1].getAttribute('aria-selected')==='true'}
 function playAuthWave(mode,x,y){const card=d.querySelector('.auth-card');cancelAnimationFrame(waveAnimationFrame);card.classList.remove('auth-switch','auth-pulse');if(motionPaused||matchMedia('(prefers-reduced-motion: reduce)').matches)return;card.style.setProperty('--wave-x',x);card.style.setProperty('--wave-y',y);waveAnimationFrame=requestAnimationFrame(()=>{waveAnimationFrame=0;if(!motionPaused)card.classList.add(mode)})}
 function selectTab(register){

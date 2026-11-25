@@ -6,3 +6,17 @@
 __pycache__/
 *.py[cod]
 *.sqlite3
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+node_modules/
+*.db
+*.sqlite
+*.log
+*.pem
+*.key
+*.p12
+*service-account*.json
+*credentials*.json
+/exports/
