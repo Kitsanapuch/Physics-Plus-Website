@@ -15,6 +15,7 @@ node_modules/
 *.sqlite
 *.log
 *.pem
+*.key
 *.p12
 *service-account*.json
 *credentials*.json
