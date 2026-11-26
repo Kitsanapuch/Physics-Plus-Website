@@ -155,7 +155,7 @@ def render_receipt_pdf(receipt: Mapping[str, Any]) -> bytes:
     _text(doc, left + 55, height - 76, "Physics Plus", bold=True, size=19)
     doc.setFillColor(_MUTED)
     doc.setFont(_FONT_REGULAR, 9.5)
-    doc.drawString(left + 55, height - 95, "สถาบันกวดวิชา Physics Plus")
+    doc.drawString(left + 55, height - 95, "ร้านสอนพิเศษ")
     doc.setStrokeColor(_BORDER)
     doc.line(left, height - 121, right, height - 121)
 
