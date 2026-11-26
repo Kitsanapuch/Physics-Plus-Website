@@ -271,8 +271,21 @@ def api(api_path: str):
 
 
 @app.get("/")
+@app.get("/index.html")
 def landing():
-    return send_from_directory(PUBLIC_DIR, "index.html")
+    response = send_from_directory(PUBLIC_DIR, "index.html")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    return response
 
 
 @app.get("/<path:asset>")
@@ -315,7 +328,8 @@ def public_asset(asset: str):
         response.headers["X-Frame-Options"] = "DENY"
         return response
     if asset not in {
-        "index.html", "robots.txt", "sitemap.xml", "live.js", "live.css", "portal.css",
+        "robots.txt", "sitemap.xml", "live.js", "live.css",
+        "portal.css", "portal.js", "portal-motion.js", "bruno-ace-sc-latin.woff2",
         "design.css", "physics-hero-gold.png", "physics-plus-logo-yellow-black.png",
         "physics-hero-gold.jpg", "physics-plus-logo-yellow-black.jpg", "physics-plus-favicon.png",
     }:
