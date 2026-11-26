@@ -329,7 +329,7 @@ def public_asset(asset: str):
         return response
     if asset not in {
         "robots.txt", "sitemap.xml", "live.js", "live.css",
-        "portal.css", "portal.js", "portal-motion.js",
+        "portal.css", "portal.js", "portal-motion.js", "bruno-ace-sc-latin.woff2",
         "design.css", "physics-hero-gold.png", "physics-plus-logo-yellow-black.png",
         "physics-hero-gold.jpg", "physics-plus-logo-yellow-black.jpg", "physics-plus-favicon.png",
     }:
