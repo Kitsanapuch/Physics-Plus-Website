@@ -1,4 +1,12 @@
 /* Foundations */
+@font-face {
+  font-family: 'Bruno Ace SC';
+  src: url('bruno-ace-sc-latin.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   --page: #010307;
@@ -52,7 +60,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
     var(--page);
 }
 
-.ambient::before, .ambient::after {
+:is(.ambient, .entry-intro)::before,
+:is(.ambient, .entry-intro)::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -62,7 +71,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   --bright-star: #fff 0 1.5px, transparent 2.3px;
 }
 
-.ambient::before {
+:is(.ambient, .entry-intro)::before {
   background-image:
     radial-gradient(circle at 4% 10%, var(--star)),
     radial-gradient(circle at 13% 24%, var(--star)),
@@ -91,7 +100,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
     radial-gradient(circle at 97% 57%, var(--star));
 }
 
-.ambient::after {
+:is(.ambient, .entry-intro)::after {
   opacity: .72;
   background-image:
     radial-gradient(circle at 3% 28%, var(--blue-star)),
@@ -885,7 +894,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
   font-weight: 650;
 }
 
-/* Short, decorative editor intro, activated only when JS opts in. */
+/* Decorative editor intro. It shares the portal's star layers and never catches input. */
 .entry-intro {
   position: fixed;
   inset: 0;
@@ -894,27 +903,38 @@ button, a { -webkit-tap-highlight-color: transparent; }
   place-items: center;
   overflow: hidden;
   isolation: isolate;
-  background: radial-gradient(ellipse at 50% 57%, #0e2238, #02050c 72%);
+  background:
+    radial-gradient(ellipse at 20% 65%, #09365070, transparent 49%),
+    radial-gradient(ellipse at 82% 30%, #12315075, transparent 46%),
+    radial-gradient(ellipse at 75% 85%, #60471737, transparent 43%),
+    #010308;
   color: #eaf7ff;
   pointer-events: none;
 }
 
-.entry-intro.is-playing { animation: entry-intro-exit .30s .85s ease both; }
+.entry-intro.is-playing { animation: entry-intro-exit .33s 1.06s ease both; }
+
+.entry-intro::before, .entry-intro::after { z-index: -1; }
+.entry-intro.is-playing::after { animation: intro-star-rise .76s var(--ease-out) both; }
 
 .intro-grid {
   position: absolute;
   z-index: -1;
   inset: 0;
-  background-image:
-    radial-gradient(circle at 16% 28%, #d4eeff 0 1px, transparent 2px),
-    radial-gradient(circle at 81% 19%, #ffe199 0 1px, transparent 2px),
-    radial-gradient(circle at 78% 68%, #def3ff 0 1px, transparent 2px),
-    radial-gradient(circle at 19% 75%, #a9dfff 0 1px, transparent 2px),
-    linear-gradient(#9fd6ff13 1px, transparent 1px),
-    linear-gradient(90deg, #9fd6ff13 1px, transparent 1px);
-  background-position: center;
-  background-size: auto, auto, auto, auto, 46px 46px, 46px 46px;
-  mask-image: radial-gradient(ellipse, #000 20%, transparent 85%);
+  background:
+    linear-gradient(#9fd6ff12 1px, transparent 1px) center / 56px 56px,
+    linear-gradient(90deg, #9fd6ff12 1px, transparent 1px) center / 56px 56px;
+  mask-image: radial-gradient(ellipse at 50% 54%, #000 14%, transparent 73%);
+}
+
+.intro-grid::before {
+  content: "";
+  position: absolute;
+  inset: 9% 4%;
+  border: 1px solid #81c7ff3d;
+  border-radius: 50%;
+  box-shadow: 0 0 38px #55b9fd19, inset 0 0 38px #55b9fd10;
+  transform: rotate(-18deg) scaleY(.62);
 }
 
 .intro-seam {
@@ -927,20 +947,20 @@ button, a { -webkit-tap-highlight-color: transparent; }
   opacity: 0;
 }
 
-.is-playing .intro-seam { animation: intro-seam .42s .59s var(--ease-out) both; }
+.is-playing .intro-seam { animation: intro-seam .46s .89s var(--ease-out) both; }
 
 .intro-window, .intro-wireframe {
   grid-area: 1 / 1;
-  width: min(400px, calc(100vw - 44px));
+  width: min(900px, calc(100vw - 40px));
 }
 
 .intro-window {
   position: relative;
   overflow: hidden;
   border: 1px solid #9bc9f17a;
-  border-radius: 13px;
-  background: linear-gradient(150deg, #142637, #091523 75%);
-  box-shadow: 0 24px 80px #000b, 0 0 0 1px #e3f4ff12, inset 0 1px 0 #d1ebff25;
+  border-radius: 17px;
+  background: linear-gradient(145deg, #14283bec, #060e19f5 59%, #172433f2);
+  box-shadow: 0 24px 80px #000b, 0 0 52px #538be827, inset 0 1px 0 #d1ebff25;
   font-family: var(--mono);
 }
 
@@ -953,14 +973,14 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 .is-playing .intro-window {
-  animation: intro-window-in .35s var(--ease-out) both, intro-window-out .27s .71s ease forwards;
+  animation: intro-window-in .35s var(--ease-out) both, intro-window-out .30s 1.03s ease forwards;
 }
 
-.is-playing .intro-window::after { animation: intro-glint .48s .17s var(--ease-out) both; }
+.is-playing .intro-window::after { animation: intro-glint .56s .21s var(--ease-out) both; }
 
 .intro-wireframe {
   position: relative;
-  height: 112px;
+  height: clamp(108px, 20vw, 200px);
 }
 
 .intro-wireframe i {
@@ -989,11 +1009,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 11px 15px;
+  padding: 11px clamp(11px, 2vw, 24px);
   border-bottom: 1px solid #c2d9f026;
   background: #ffffff08;
   color: var(--muted);
-  font-size: 11px;
+  font-size: clamp(8px, 2.4vw, 11px);
 }
 
 .intro-lights { display: flex; gap: 5px; }
@@ -1004,36 +1024,42 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .intro-command {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 71px;
-  padding: 14px 15px;
-  color: #edf7ff;
-  font-size: clamp(13px, 3.8vw, 16px);
-  font-weight: 650;
+  justify-content: center;
+  gap: .20em;
+  min-height: clamp(78px, 17vw, 165px);
+  padding: 12px 10px;
+  color: #fffefa;
+  font: 400 clamp(17px, 7.4vw, 82px)/1.15 'Bruno Ace SC', 'Arial Black', sans-serif;
   white-space: nowrap;
 }
 
-.intro-message { display: block; overflow: hidden; }
-
-.is-playing .intro-message { animation: intro-type .39s .12s steps(12, end) both; }
-
-.intro-caret {
+.intro-message {
   display: block;
-  width: 7px;
-  height: 1em;
-  background: var(--ice);
+  letter-spacing: -.045em;
+  -webkit-text-stroke: .033em #fffefa;
+  text-shadow: 0 2px 0 #92b7ce, 0 0 24px #6dbeff72, 0 9px 30px #000b;
 }
 
-.is-playing .intro-caret { animation: intro-caret .29s steps(1) 3; }
+.is-playing .intro-message { animation: intro-wordmark-in .38s .12s var(--ease-out) both; }
+
+.intro-caret {
+  flex: 0 0 .075em;
+  height: .7em;
+  border-radius: 1px;
+  background: var(--ice);
+  box-shadow: 0 0 13px #83caffb5;
+}
+
+.is-playing .intro-caret { animation: intro-caret .32s .12s steps(1) 3 both; }
 
 .intro-ready {
   margin-left: auto;
   color: var(--gold);
-  font-size: 11px;
+  font-size: inherit;
   font-weight: 650;
 }
 
-.is-playing .intro-ready { animation: intro-ready .13s .50s ease both; }
+.is-playing .intro-ready { animation: intro-ready .15s .56s ease both; }
 
 .intro-track { height: 2px; background: #a4c7ed28; }
 .intro-track > span {
@@ -1044,12 +1070,16 @@ button, a { -webkit-tap-highlight-color: transparent; }
   transform-origin: left;
 }
 
-.is-playing .intro-track > span { animation: intro-progress .50s .10s var(--ease-out) both; }
+.is-playing .intro-track > span { animation: intro-progress .59s .10s var(--ease-out) both; }
 
 @keyframes entry-intro-exit { to { opacity: 0; visibility: hidden; } }
+@keyframes intro-star-rise { from { opacity: .35; } to { opacity: .88; } }
 @keyframes intro-ready { from { opacity: 0; } to { opacity: 1; } }
-@keyframes intro-type { from { width: 0; } to { width: 12ch; } }
-@keyframes intro-caret { 50% { opacity: 0; } }
+@keyframes intro-wordmark-in {
+  from { opacity: .12; transform: translateY(8px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes intro-caret { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 @keyframes intro-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 @keyframes intro-window-in {
@@ -1165,11 +1195,11 @@ button, a { -webkit-tap-highlight-color: transparent; }
   html:not(.motion-paused) .is-confirmed .enter-button { animation: auth-confirm .28s var(--ease-out); }
 
   .entry-intro.is-playing ~ .portal-layout :is(.story-top, .cosmic-mark, .cosmic-title) {
-    animation: section-enter .42s .67s var(--ease-out) both;
+    animation: section-enter .42s .88s var(--ease-out) both;
   }
 
   .entry-intro.is-playing ~ .portal-layout .auth-card {
-    animation: section-enter .40s .75s var(--ease-out) both;
+    animation: section-enter .40s .94s var(--ease-out) both;
   }
 }
 

@@ -1,4 +1,4 @@
-import { animateClass, initPortalMotion, motionEnabled, playEntryIntro } from './portal-motion.js?v=1';
+import { animateClass, initPortalMotion, motionEnabled, playEntryIntro } from './portal-motion.js?v=2';
 
 const get = id => document.getElementById(id);
 const layout = document.querySelector('.portal-layout');

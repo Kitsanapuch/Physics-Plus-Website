@@ -22,13 +22,16 @@ class PublicSearchVisibilityTests(unittest.TestCase):
                     self.assertIn("form-action 'self'", policy)
                     self.assertNotIn("'unsafe-inline'", policy)
                     html = response.get_data(as_text=True)
-                    self.assertIn('src="portal.js?v=1"', html)
+                    self.assertIn('src="portal.js?v=2"', html)
                     self.assertNotIn(" onload=", html)
         for path in ("/portal.js", "/portal-motion.js"):
             with client.get(path) as response:
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("javascript", response.mimetype)
                 self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+        with client.get("/bruno-ace-sc-latin.woff2") as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data[:4], b"wOF2")
 
     def test_public_homepage_metadata_and_sitemap(self) -> None:
         client = app.test_client()

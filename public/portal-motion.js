@@ -23,7 +23,7 @@ export function playEntryIntro(intro) {
     intro.hidden = true;
     intro.classList.remove('is-playing');
   };
-  const fallback = setTimeout(finish, 1250);
+  const fallback = setTimeout(finish, 1470);
   const options = { signal: events.signal };
 
   intro.addEventListener('animationend', event => {
