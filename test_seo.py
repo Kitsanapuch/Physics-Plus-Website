@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import unittest
+from pathlib import Path
 from xml.etree import ElementTree
 
 from app import app
@@ -11,12 +13,18 @@ from app import app
 class PublicSearchVisibilityTests(unittest.TestCase):
     def test_login_pages_use_local_scripts_and_the_same_security_headers(self) -> None:
         client = app.test_client()
+        deployment = json.loads(Path(__file__).with_name("vercel.json").read_text(encoding="utf-8"))
+        edge_headers = {
+            entry["source"]: {header["key"]: header["value"] for header in entry["headers"]}
+            for entry in deployment["headers"]
+        }
         for path in ("/", "/index.html"):
             with self.subTest(path=path):
                 with client.get(path) as response:
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.headers["Cache-Control"], "no-store")
                     policy = response.headers["Content-Security-Policy"]
+                    self.assertEqual(edge_headers[path]["Content-Security-Policy"], policy)
                     self.assertIn("script-src 'self'", policy)
                     self.assertIn("frame-ancestors 'none'", policy)
                     self.assertIn("form-action 'self'", policy)
